@@ -1,16 +1,15 @@
-// @ts-check
 import { defineConfig } from 'astro/config';
-import cloudflare from '@astrojs/cloudflare';
-import tailwindcss from '@tailwindcss/vite';
 import react from '@astrojs/react';
 import mdx from '@astrojs/mdx';
 import sitemap from '@astrojs/sitemap';
+import tailwindcss from '@tailwindcss/vite';
 import remarkGfm from 'remark-gfm';
 import rehypePrettyCode from 'rehype-pretty-code';
+import remarkMath from 'remark-math';
+import rehypeKatex from 'rehype-katex';
 import { remarkCodeMeta } from './src/lib/remark-code-meta.ts';
 import { CONFIG } from './src/data/config.ts';
 
-/** @type {import('rehype-pretty-code').Options} */
 const prettyCodeOptions = {
   theme: {
     light: 'github-light',
@@ -19,30 +18,23 @@ const prettyCodeOptions = {
   keepBackground: false,
 };
 
-// https://astro.build/config
 export default defineConfig({
-  site: CONFIG.site.url,
-  output: 'server',
+  site: 'https://yoniaflalo.github.io',
+  base: '/', // IMPORTANT for user site repo
 
-  adapter: cloudflare(),
-
-  vite: {
-    plugins: [tailwindcss()],
-  },
+  output: 'static',
 
   integrations: [
     react(),
     mdx({
-      remarkPlugins: [remarkGfm, remarkCodeMeta],
-      rehypePlugins: [[rehypePrettyCode, prettyCodeOptions]],
+      remarkPlugins: [remarkGfm, remarkMath, remarkCodeMeta],
+      rehypePlugins: [[rehypePrettyCode, prettyCodeOptions], rehypeKatex],
       syntaxHighlight: false,
     }),
     sitemap(),
   ],
 
-  markdown: {
-    syntaxHighlight: false,
-    remarkPlugins: [remarkGfm, remarkCodeMeta],
-    rehypePlugins: [[rehypePrettyCode, prettyCodeOptions]],
+  vite: {
+    plugins: [tailwindcss()],
   },
 });

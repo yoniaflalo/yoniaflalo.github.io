@@ -1,0 +1,2124 @@
+---
+title: "A Unified Mathematical Framework for Backpropagation, Attention, and State Management in Large-Scale Transformers"
+author: Yonathan Aflalo
+publishedAt: "2026-06-26"
+summary: "A Unified Mathematical Framework for Backpropagation, Attention, and State Management in Large-Scale Transformers"
+math: true
+---
+
+
+# Introduction
+
+Modern large-scale neural networks, particularly Transformer-based
+architectures, are constrained not only by computational cost but also
+by the management of intermediate state during both training and
+inference.
+
+This paper develops a unified mathematical view of these systems as
+instances of a single underlying problem: **state management in
+computational graphs**. In this view, training and inference are
+governed by how intermediate quantities are stored, recomputed, or
+distributed under memory and communication constraints.
+
+We begin from first principles of reverse-mode automatic differentiation
+and derive the structure of backpropagation as a chain-rule-driven
+traversal of a computational graph. We then introduce activation
+checkpointing as a principled memory--computation tradeoff based on
+segment-wise recomputation.
+
+We extend this framework to Transformer attention, showing how quadratic
+memory arises from explicit materialization of pairwise interactions.
+This naturally leads to FlashAttention, which can be interpreted as a
+structured form of online checkpointing applied to the softmax
+normalization over attention scores.
+
+Finally, we unify three core systems techniques used in modern LLM
+training and inference:
+
+- Activation checkpointing (activation recomputation)
+
+- FSDP (parameter and optimizer state sharding)
+
+- KV cache (temporal state reuse in autoregressive inference)
+
+We show that these methods are not independent optimizations, but rather
+different instantiations of a single principle: the tradeoff between
+storing, recomputing, and communicating intermediate states in a large
+computational graph.
+
+# Introduction: Transformers as Differentiable State Machines
+
+Modern large language models are built on the Transformer architecture,
+which can be viewed as a large differentiable computational graph.
+
+At a high level, a neural network transforms an input state through a
+sequence of parameterized functions:
+
+
+$$
+\begin{equation}
+y_i=f_i(y_{i-1},W_i)
+\end{equation}
+$$
+where:
+
+- $y_i$ represents the intermediate state after layer $i$
+
+- $W_i$ represents the trainable parameters of layer $i$
+
+- $f_i$ represents the computation performed by the layer
+
+Training requires computing gradients of a loss function:
+
+
+$$
+\begin{equation}
+\mathcal{L}=L(y_n)
+\end{equation}
+$$
+with respect to all parameters:
+
+
+$$
+\begin{equation}
+\nabla_{W_i}\mathcal{L}
+\end{equation}
+$$
+The central challenge of modern large-scale training is that the
+computation graph creates enormous intermediate states. Modern systems
+such as activation checkpointing, FlashAttention, FSDP, and KV caching
+can all be understood as different strategies for managing these states.
+
+# Reverse-Mode Automatic Differentiation
+
+## Forward computation
+
+Consider a network of $n$ layers:
+
+
+$$
+\begin{align}
+y_0 &= x\\
+y_i &= f_i(y_{i-1},W_i)
+\end{align}
+$$
+The forward pass computes:
+
+
+$$
+\begin{equation}
+x
+\rightarrow
+y_1
+\rightarrow
+y_2
+\rightarrow
+\dots
+\rightarrow
+y_n
+\end{equation}
+$$
+The loss is:
+
+
+$$
+\begin{equation}
+\mathcal{L}=L(y_n)
+\end{equation}
+$$
+## Backward computation
+
+Define the adjoint variables:
+
+
+$$
+\begin{equation}
+\bar{y_i}
+=
+\frac{\partial \mathcal{L}}{\partial y_i}
+\end{equation}
+$$
+The final gradient is:
+
+
+$$
+\begin{equation}
+\bar{y_n}
+=
+\frac{\partial L}{\partial y_n}
+\end{equation}
+$$
+Using the chain rule:
+
+
+$$
+\begin{equation}
+\bar{y}_{i-1}
+=
+\bar{y_i}
+\frac{\partial f_i}{\partial y_{i-1}}
+\end{equation}
+$$
+The gradient with respect to the parameters is:
+
+
+$$
+\begin{equation}
+\bar{W_i}
+=
+\bar{y_i}
+\frac{\partial f_i}{\partial W_i}
+\end{equation}
+$$
+These two equations define backpropagation.
+
+## Why activations must be stored
+
+The computation of:
+
+
+$$
+\begin{equation}
+\frac{\partial f_i}{\partial W_i}
+\end{equation}
+$$
+usually depends on the input activation:
+
+
+$$
+\begin{equation}
+y_{i-1}
+\end{equation}
+$$
+For example, for a linear layer:
+
+
+$$
+\begin{equation}
+y_i=W_i y_{i-1}
+\end{equation}
+$$
+the parameter gradient is:
+
+
+$$
+\begin{equation}
+\frac{\partial \mathcal{L}}{\partial W_i}
+=
+\bar{y_i}y_{i-1}^{T}
+\end{equation}
+$$
+Therefore, standard training stores:
+
+
+$$
+\begin{equation}
+\{y_0,y_1,\dots,y_{n-1}\}
+\end{equation}
+$$
+during the forward pass.
+
+The memory complexity is:
+
+
+$$
+\begin{equation}
+M=O(n)
+\end{equation}
+$$
+with respect to the number of layers.
+
+# Activation Checkpointing
+
+## Motivation
+
+For large Transformer models, activation memory can exceed parameter
+memory.
+
+However, forward computation is deterministic:
+
+
+$$
+\begin{equation}
+y_i=f_i(y_{i-1},W_i)
+\end{equation}
+$$
+Therefore, intermediate activations do not need to be stored
+permanently.
+
+They can be recomputed from earlier states.
+
+## Segment-based checkpointing
+
+Divide the network into $k$ segments.
+
+Assume each segment contains:
+
+
+$$
+\begin{equation}
+m=\frac{n}{k}
+\end{equation}
+$$
+layers.
+
+Instead of storing all activations, store only the segment boundaries:
+
+
+$$
+\begin{equation}
+y_0,y_m,y_{2m},...,y_n
+\end{equation}
+$$
+## Backward computation with checkpoints
+
+For a given segment:
+
+1.  Load the checkpoint activation $y_{jm}$
+
+2.  Recompute:
+
+    
+$$
+\begin{equation}
+    y_{jm+1},...,y_{(j+1)m}
+    \end{equation}
+$$
+
+using the stored weights
+
+3.  Perform standard backpropagation inside this segment
+
+The missing activations are not approximated. They are exactly
+regenerated.
+
+## Memory analysis
+
+Memory contains:
+
+1.  $k$ checkpoint activations
+
+2.  Temporary activations of one segment
+
+Therefore:
+
+
+$$
+\begin{equation}
+M(k)
+=
+k+\frac{n}{k}
+\end{equation}
+$$
+Minimizing:
+
+
+$$
+\begin{equation}
+\frac{dM}{dk}
+=
+1-\frac{n}{k^2}
+\end{equation}
+$$
+gives:
+
+
+$$
+\begin{equation}
+k=\sqrt{n}
+\end{equation}
+$$
+and therefore:
+
+
+$$
+\begin{equation}
+M_{\min}=O(\sqrt{n})
+\end{equation}
+$$
+## Interpretation
+
+Activation checkpointing does not eliminate the need for intermediate
+states.
+
+Instead, it changes the strategy:
+
+| Method | Memory | Compute |
+|--------|--------|----------|
+| Store everything | $O(n)$ | $O(n)$ |
+| Checkpointing | $O(\sqrt{n})$ | $O(n)$ |
+| Store nothing | $O(1)$ | $O(n^2)$ |
+
+The optimal strategy is to store a sparse representation of the
+computational history and reconstruct missing states when needed.
+
+# Transformer Architecture
+
+A Transformer layer is a composition of two main operations:
+
+1.  Multi-head self-attention
+
+2.  Position-wise feed-forward network (MLP)
+
+Both are wrapped with residual connections and normalization.
+
+A modern Transformer block can be written as:
+
+
+$$
+\begin{align}
+z_l &= x_l + \mathrm{Attention}(\mathrm{LN}(x_l))\\
+x_{l+1} &= z_l + \mathrm{MLP}(\mathrm{LN}(z_l))
+\end{align}
+$$
+This is the Pre-LayerNorm formulation used by most modern LLMs.
+
+# Self-Attention
+
+## Input representation
+
+Let:
+
+
+$$
+\begin{equation}
+X\in\mathbb{R}^{T\times d}
+\end{equation}
+$$
+where:
+
+- $T$ is sequence length
+
+- $d$ is embedding dimension
+
+The attention mechanism creates three projections:
+
+
+$$
+\begin{align}
+Q&=XW_Q\\
+K&=XW_K\\
+V&=XW_V
+\end{align}
+$$
+where:
+
+
+$$
+\begin{equation}
+W_Q,W_K,W_V\in\mathbb{R}^{d\times d_k}
+\end{equation}
+$$
+## Scaled dot-product attention
+
+The attention score between token $i$ and token $j$ is:
+
+
+$$
+\begin{equation}
+s_{ij}=q_i^Tk_j
+\end{equation}
+$$
+In matrix form:
+
+
+$$
+\begin{equation}
+S=QK^T
+\end{equation}
+$$
+with:
+
+
+$$
+\begin{equation}
+S\in\mathbb{R}^{T\times T}
+\end{equation}
+$$
+The final attention output is:
+
+
+$$
+\begin{equation}
+O=
+\mathrm{softmax}
+\left(
+\frac{QK^T}{\sqrt{d_k}}
+\right)V
+\end{equation}
+$$
+
+# Why the $\sqrt{d_k}$ scaling exists
+
+Assume each component of query and key vectors is independent:
+
+
+$$
+\begin{equation}
+q_i,k_i\sim\mathcal{N}(0,1)
+\end{equation}
+$$
+The dot product is:
+
+
+$$
+\begin{equation}
+q^Tk=\sum_{i=1}^{d_k}q_ik_i
+\end{equation}
+$$
+The variance becomes:
+
+
+$$
+\begin{equation}
+Var(q^Tk)=d_k
+\end{equation}
+$$
+Therefore, as dimension grows, attention logits grow:
+
+
+$$
+\begin{equation}
+|q^Tk|\propto\sqrt{d_k}
+\end{equation}
+$$
+Large logits cause softmax saturation:
+
+
+$$
+\begin{equation}
+\mathrm{softmax}(x)_i
+=
+\frac{e^{x_i}}{\sum_j e^{x_j}}
+\end{equation}
+$$
+If one value dominates:
+
+
+$$
+\begin{equation}
+x_i\gg x_j
+\end{equation}
+$$
+then:
+
+
+$$
+\begin{equation}
+\mathrm{softmax}(x)_i\approx1
+\end{equation}
+$$
+which produces:
+
+- vanishing gradients
+
+- unstable training
+
+Dividing by:
+
+
+$$
+\begin{equation}
+\sqrt{d_k}
+\end{equation}
+$$
+keeps the variance approximately constant.
+
+# Multi-Head Attention
+
+Instead of one attention operation, Transformer uses $h$ independent
+heads:
+
+
+$$
+\begin{equation}
+d_k=\frac{d}{h}
+\end{equation}
+$$
+For head $i$:
+
+
+$$
+\begin{equation}
+O_i=
+\mathrm{Attention}(Q_i,K_i,V_i)
+\end{equation}
+$$
+The outputs are concatenated:
+
+
+$$
+\begin{equation}
+O=
+[O_1,\dots,O_h]W_O
+\end{equation}
+$$
+The motivation is that different heads can specialize:
+
+- syntax
+
+- long-range dependencies
+
+- positional relationships
+
+- semantic similarity
+
+# Residual Connections
+
+A Transformer block uses residual connections:
+
+
+$$
+\begin{equation}
+x_{l+1}=x_l+F(x_l,W_l)
+\end{equation}
+$$
+The gradient becomes:
+
+
+$$
+\begin{equation}
+\frac{\partial x_{l+1}}{\partial x_l}
+=
+I+
+\frac{\partial F}{\partial x_l}
+\end{equation}
+$$
+The identity term creates a direct gradient path:
+
+
+$$
+\begin{equation}
+\prod_l
+\left(
+I+\frac{\partial F_l}{\partial x_l}
+\right)
+\end{equation}
+$$
+without requiring gradients to pass only through nonlinear
+transformations.
+
+This reduces vanishing-gradient problems in deep networks.
+
+# Layer Normalization
+
+For a token representation:
+
+
+$$
+\begin{equation}
+x\in\mathbb{R}^{d}
+\end{equation}
+$$
+LayerNorm normalizes across the embedding dimension:
+
+
+$$
+\begin{equation}
+\mu=
+\frac{1}{d}
+\sum_i x_i
+\end{equation}
+$$
+$$
+\begin{equation}
+\sigma^2
+=
+\frac{1}{d}
+\sum_i(x_i-\mu)^2
+\end{equation}
+$$
+The normalized vector is:
+
+
+$$
+\begin{equation}
+\hat{x_i}
+=
+\frac{x_i-\mu}
+{\sqrt{\sigma^2+\epsilon}}
+\end{equation}
+$$
+The output is:
+
+
+$$
+\begin{equation}
+LN(x)=\gamma\hat{x}+\beta
+\end{equation}
+$$
+where:
+
+- $\gamma$ controls scale
+
+- $\beta$ controls shift
+
+# Post-LN vs Pre-LN Transformers
+
+## Original Transformer: Post-LN
+
+The original Transformer uses:
+
+
+$$
+\begin{equation}
+x_{l+1}
+=
+LN(x_l+F(x_l))
+\end{equation}
+$$
+The residual branch is normalized after addition.
+
+## Modern LLMs: Pre-LN
+
+GPT-style models use:
+
+
+$$
+\begin{equation}
+x_{l+1}
+=
+x_l+F(LN(x_l))
+\end{equation}
+$$
+The residual stream remains unmodified.
+
+## Why Pre-LN is more stable
+
+The gradient through the residual stream is:
+
+
+$$
+\begin{equation}
+\frac{\partial x_{l+1}}{\partial x_l}
+=
+I+
+\frac{\partial F(LN(x_l))}
+{\partial x_l}
+\end{equation}
+$$
+The identity path remains explicit.
+
+Therefore deep networks can preserve gradient information across many
+layers.
+
+In contrast, Post-LN gives:
+
+
+$$
+\begin{equation}
+\frac{\partial LN(x_l+F(x_l))}
+{\partial x_l}
+\end{equation}
+$$
+which always passes through LayerNorm and can distort gradient
+magnitudes.
+
+# Transformer Block Summary
+
+A modern Transformer layer can therefore be viewed as:
+
+
+$$
+\begin{equation}
+x_{l+1}
+=
+x_l+
+MLP(LN(
+x_l+
+Attention(LN(x_l))
+))
+\end{equation}
+$$
+The residual stream is the central information highway of the network.
+
+Attention and MLP blocks modify this stream, while LayerNorm controls
+numerical stability.
+
+# Attention Memory and FlashAttention
+
+Self-attention is one of the defining components of Transformers, but it
+introduces a quadratic dependency on sequence length.
+
+The main challenge is not only computation, but the storage of
+intermediate states required for training.
+
+# Computational Cost of Standard Attention
+
+Given:
+
+
+$$
+\begin{equation}
+Q,K,V\in\mathbb{R}^{T\times d}
+\end{equation}
+$$
+the attention matrix is:
+
+
+$$
+\begin{equation}
+S=
+\frac{QK^T}{\sqrt{d}}
+\end{equation}
+$$
+where:
+
+
+$$
+\begin{equation}
+S\in\mathbb{R}^{T\times T}
+\end{equation}
+$$
+The output is:
+
+
+$$
+\begin{equation}
+O=
+\mathrm{softmax}(S)V
+\end{equation}
+$$
+## Computational complexity
+
+The matrix multiplication:
+
+
+$$
+\begin{equation}
+QK^T
+\end{equation}
+$$
+requires:
+
+
+$$
+\begin{equation}
+O(T^2d)
+\end{equation}
+$$
+operations.
+
+The attention output:
+
+
+$$
+\begin{equation}
+AV
+\end{equation}
+$$
+has the same complexity.
+
+Therefore:
+
+
+$$
+\begin{equation}
+C_{attention}=O(T^2d)
+\end{equation}
+$$
+## Memory complexity
+
+The attention matrix:
+
+
+$$
+\begin{equation}
+S\in\mathbb{R}^{T\times T}
+\end{equation}
+$$
+requires:
+
+
+$$
+\begin{equation}
+O(T^2)
+\end{equation}
+$$
+memory.
+
+For long sequences, this matrix dominates activation memory.
+
+# Why the Attention Matrix Must Be Stored
+
+During backward propagation:
+
+
+$$
+\begin{equation}
+O=AV
+\end{equation}
+$$
+where:
+
+
+$$
+\begin{equation}
+A=\mathrm{softmax}(S)
+\end{equation}
+$$
+The gradients require:
+
+
+$$
+\begin{equation}
+\frac{\partial L}{\partial V}
+=
+A^T
+\frac{\partial L}{\partial O}
+\end{equation}
+$$
+and:
+
+
+$$
+\begin{equation}
+\frac{\partial L}{\partial A}
+=
+\frac{\partial L}{\partial O}
+V^T
+\end{equation}
+$$
+The gradient through softmax requires the attention probabilities:
+
+
+$$
+\begin{equation}
+A
+\end{equation}
+$$
+Therefore standard implementations store:
+
+- $Q$
+
+- $K$
+
+- $V$
+
+- $A$
+
+The problematic tensor is:
+
+
+$$
+\begin{equation}
+A\in\mathbb{R}^{T\times T}
+\end{equation}
+$$
+# FlashAttention Motivation
+
+The key observation:
+
+The attention matrix is an intermediate activation.
+
+This is exactly the situation addressed by activation checkpointing.
+
+Instead of:
+
+
+$$
+\begin{equation}
+Q,K
+\rightarrow
+S
+\rightarrow
+A
+\rightarrow
+O
+\end{equation}
+$$
+we avoid materializing:
+
+
+$$
+\begin{equation}
+S,A
+\end{equation}
+$$
+and compute attention in blocks.
+
+# Tiled Attention Computation
+
+Partition the sequence into blocks:
+
+
+$$
+\begin{equation}
+Q=
+(Q_1,Q_2,\dots,Q_B)
+\end{equation}
+$$
+and:
+
+
+$$
+\begin{equation}
+K=
+(K_1,K_2,\dots,K_B)
+\end{equation}
+$$
+For a query block:
+
+
+$$
+\begin{equation}
+Q_i
+\end{equation}
+$$
+we compute:
+
+
+$$
+\begin{equation}
+S_{ij}
+=
+Q_iK_j^T
+\end{equation}
+$$
+for each key block.
+
+Instead of storing:
+
+
+$$
+\begin{equation}
+S\in\mathbb{R}^{T\times T}
+\end{equation}
+$$
+we process:
+
+
+$$
+\begin{equation}
+S_{ij}
+\end{equation}
+$$
+one block at a time.
+
+# Online Softmax
+
+The difficulty is that softmax requires the normalization:
+
+
+$$
+\begin{equation}
+\sum_j e^{s_j}
+\end{equation}
+$$
+which seems to require all logits.
+
+FlashAttention uses an online formulation.
+
+For a row of logits:
+
+
+$$
+\begin{equation}
+x=(x_1,\dots,x_T)
+\end{equation}
+$$
+define:
+
+
+$$
+\begin{equation}
+m=\max_i x_i
+\end{equation}
+$$
+and:
+
+
+$$
+\begin{equation}
+\ell
+=
+\sum_i e^{x_i-m}
+\end{equation}
+$$
+The softmax output is:
+
+
+$$
+\begin{equation}
+\mathrm{softmax}(x)_i
+=
+\frac{e^{x_i-m}}
+{\ell}
+\end{equation}
+$$
+Now process blocks sequentially.
+
+For a new block with maximum:
+
+
+$$
+\begin{equation}
+m_{new}
+\end{equation}
+$$
+update:
+
+
+$$
+\begin{equation}
+m'
+=
+\max(m,m_{new})
+\end{equation}
+$$
+The normalization becomes:
+
+
+$$
+\begin{equation}
+\ell'
+=
+\ell e^{m-m'}
++
+\sum_j e^{x_j-m'}
+\end{equation}
+$$
+This allows exact accumulation without storing all logits.
+
+# FlashAttention Memory Complexity
+
+The algorithm stores only:
+
+- blocks of $Q$
+
+- blocks of $K$
+
+- blocks of $V$
+
+- running softmax statistics
+
+Therefore:
+
+
+$$
+\begin{equation}
+M_{FlashAttention}
+=
+O(Td)
+\end{equation}
+$$
+instead of:
+
+
+$$
+\begin{equation}
+O(T^2)
+\end{equation}
+$$
+The result is mathematically identical:
+
+
+$$
+\begin{equation}
+O_{FlashAttention}
+=
+O_{standard}
+\end{equation}
+$$
+No approximation is introduced.
+
+# FlashAttention as Checkpointing
+
+The relationship with activation checkpointing is:
+
+| Technique | Avoided stored state |
+|----------|----------------------|
+| Activation checkpointing | Layer activations |
+| FlashAttention | Attention matrix |
+
+Both exploit the same principle:
+
+
+$$
+\begin{equation}
+\text{Store less state}
+\quad
+\leftrightarrow
+\quad
+\text{recompute structured quantities}
+\end{equation}
+$$
+# GPU Perspective
+
+Modern accelerators have multiple memory levels:
+
+- High bandwidth memory (HBM)
+
+- SRAM / shared memory
+
+- Registers
+
+The naive attention implementation repeatedly writes and reads:
+
+
+$$
+\begin{equation}
+T^2
+\end{equation}
+$$
+values from slow memory.
+
+FlashAttention improves performance by maximizing computation inside
+fast on-chip memory.
+
+Therefore FlashAttention improves:
+
+- memory usage
+
+- bandwidth efficiency
+
+- runtime
+
+not because it reduces the mathematical number of operations, but
+because it reduces expensive memory movement.
+
+# Distributed Training of Large Language Models
+
+Training modern large language models requires distributing computation
+and memory across many accelerators.
+
+A model with billions of parameters creates three major memory
+components:
+
+1.  Parameters
+
+2.  Gradients
+
+3.  Optimizer states
+
+The challenge is that the optimizer state can exceed the parameter
+memory.
+
+# Memory Accounting
+
+Assume a model has:
+
+
+$$
+\begin{equation}
+N
+\end{equation}
+$$
+parameters.
+
+## Parameters
+
+With mixed precision training:
+
+- Forward weights are often stored in FP16/BF16
+
+Memory:
+
+
+$$
+\begin{equation}
+M_W=2N \text{ bytes}
+\end{equation}
+$$
+## Gradients
+
+Gradients usually have the same precision:
+
+
+$$
+\begin{equation}
+M_G=2N
+\end{equation}
+$$
+## Adam optimizer states
+
+Adam maintains two moments:
+
+
+$$
+\begin{align}
+m_t&=\beta_1m_{t-1}+(1-\beta_1)g_t\\
+v_t&=\beta_2v_{t-1}+(1-\beta_2)g_t^2
+\end{align}
+$$
+Typically these are stored in FP32:
+
+
+$$
+\begin{equation}
+M_{Adam}=2\times4N
+\end{equation}
+$$
+Therefore:
+
+
+$$
+\begin{equation}
+M_{total}
+=
+2N+2N+8N
+\end{equation}
+$$
+$$
+\begin{equation}
+M_{total}=12N
+\end{equation}
+$$
+bytes per parameter.
+
+A model with:
+
+
+$$
+\begin{equation}
+N=100B
+\end{equation}
+$$
+requires:
+
+
+$$
+\begin{equation}
+1.2TB
+\end{equation}
+$$
+just for parameters, gradients, and optimizer states.
+
+# Data Parallel Training
+
+The simplest distributed strategy is data parallelism.
+
+Each GPU holds:
+
+
+$$
+\begin{equation}
+(W,G,O)
+\end{equation}
+$$
+and processes different minibatches.
+
+After backward:
+
+gradients are synchronized:
+
+
+$$
+\begin{equation}
+G
+=
+\frac{1}{P}
+\sum_{i=1}^{P}G_i
+\end{equation}
+$$
+where $P$ is the number of workers.
+
+The problem:
+
+Every worker stores a full copy of the model.
+
+Memory does not scale with the number of GPUs.
+
+# Tensor Parallelism
+
+Tensor parallelism splits individual matrix operations.
+
+For a linear layer:
+
+
+$$
+\begin{equation}
+Y=XW
+\end{equation}
+$$
+partition:
+
+
+$$
+\begin{equation}
+W=[W_1,W_2,\dots,W_p]
+\end{equation}
+$$
+Each GPU computes:
+
+
+$$
+\begin{equation}
+Y_i=XW_i
+\end{equation}
+$$
+The outputs are combined:
+
+
+$$
+\begin{equation}
+Y=[Y_1,\dots,Y_p]
+\end{equation}
+$$
+Advantages:
+
+- reduces parameter memory per GPU
+
+- reduces compute per GPU
+
+Cost:
+
+requires communication during every layer.
+
+# Pipeline Parallelism
+
+Pipeline parallelism assigns different layers to different GPUs.
+
+Example:
+
+
+$$
+\begin{equation}
+GPU_1:
+f_1,f_2
+\end{equation}
+$$
+$$
+\begin{equation}
+GPU_2:
+f_3,f_4
+\end{equation}
+$$
+The drawback is pipeline bubbles when workers wait.
+
+# Fully Sharded Data Parallel (FSDP)
+
+FSDP combines data parallelism with parameter sharding.
+
+Instead of every GPU storing:
+
+
+$$
+\begin{equation}
+(W,G,O)
+\end{equation}
+$$
+each GPU stores only a shard:
+
+
+$$
+\begin{equation}
+(W_i,G_i,O_i)
+\end{equation}
+$$
+For $P$ GPUs:
+
+
+$$
+\begin{equation}
+M_{GPU}
+=
+\frac{1}{P}
+M_{full}
+\end{equation}
+$$
+# FSDP Forward Pass
+
+For a layer requiring parameters $W$:
+
+1.  Each GPU owns only a shard
+
+2.  GPUs perform all-gather
+
+    
+$$
+\begin{equation}
+    W=
+    \mathrm{AllGather}(W_i)
+    \end{equation}
+$$
+3.  Compute forward
+
+4.  Discard full weights
+
+# FSDP Backward Pass
+
+During backward:
+
+Gradients are computed:
+
+
+$$
+\begin{equation}
+G=\frac{\partial L}{\partial W}
+\end{equation}
+$$
+Then gradients are sharded:
+
+
+$$
+\begin{equation}
+G_i=
+\mathrm{ReduceScatter}(G)
+\end{equation}
+$$
+Each GPU keeps only its gradient shard.
+
+# FSDP Communication Pattern
+
+The fundamental operations are:
+
+| Phase   | Communication |
+|---------|---------------|
+| Forward | All-Gather parameters |
+| Backward | Reduce-Scatter gradients |
+
+FSDP trades:
+
+
+$$
+\begin{equation}
+\text{memory}
+\end{equation}
+$$
+for:
+
+
+$$
+\begin{equation}
+\text{communication bandwidth}
+\end{equation}
+$$
+# Interaction Between FSDP and Activation Checkpointing
+
+These techniques solve different memory problems.
+
+## FSDP reduces
+
+
+$$
+\begin{equation}
+(W,G,O)
+\end{equation}
+$$
+memory.
+
+## Checkpointing reduces
+
+
+$$
+\begin{equation}
+\{y_1,\dots,y_n\}
+\end{equation}
+$$
+activation memory.
+
+They are complementary.
+
+A frontier-scale model usually uses both:
+
+
+$$
+\begin{equation}
+\text{Total memory}
+=
+\text{parameter memory}
++
+\text{activation memory}
+\end{equation}
+$$
+with:
+
+
+$$
+\begin{align}
+\text{FSDP}
+&\rightarrow
+\text{parameter memory reduction}\\
+\text{Checkpointing}
+&\rightarrow
+\text{activation memory reduction}
+\end{align}
+$$
+# Unified View
+
+FSDP, checkpointing, and FlashAttention all optimize the same question:
+
+
+$$
+\begin{equation}
+\boxed{
+\text{Which states should be stored, recomputed, or communicated?}
+}
+\end{equation}
+$$
+
+| Technique | State optimized | Strategy |
+|----------|-----------------|----------|
+| Checkpointing | Activations | Recompute |
+| FlashAttention | Attention matrix | Avoid materialization |
+| FSDP | Parameters | Shard + communicate |
+
+# Mixture of Experts (MoE)
+
+Mixture of Experts architectures scale model capacity by increasing the
+number of parameters without increasing compute proportionally.
+
+The key idea is to replace dense feed-forward layers with a sparse
+selection of expert networks.
+
+# Dense Feed-Forward Layer Baseline
+
+In a standard Transformer block, the MLP is:
+
+
+$$
+\begin{align}
+h &= \sigma(W_1 x)\\
+y &= W_2 h
+\end{align}
+$$
+Typically:
+
+
+$$
+\begin{equation}
+W_1 \in \mathbb{R}^{d \times d_{ff}}, \quad
+W_2 \in \mathbb{R}^{d_{ff} \times d}
+\end{equation}
+$$
+with:
+
+
+$$
+\begin{equation}
+d_{ff} \approx 4d
+\end{equation}
+$$
+This layer is applied to every token.
+
+# MoE Reformulation
+
+Instead of a single MLP, we define $E$ expert networks:
+
+
+$$
+\begin{equation}
+\mathrm{Expert}_e(x) = W^e_2 \sigma(W^e_1 x)
+\end{equation}
+$$
+Each expert is structurally identical to a standard FFN but with
+independent parameters.
+
+# Routing Mechanism
+
+A router computes a distribution over experts:
+
+
+$$
+\begin{equation}
+p(x) = \mathrm{softmax}(W_r x)
+\end{equation}
+$$
+where:
+
+
+$$
+\begin{equation}
+p(x) \in \mathbb{R}^{E}
+\end{equation}
+$$
+## Top-k routing
+
+Instead of using all experts, only the top-$k$ are activated:
+
+
+$$
+\begin{equation}
+\mathcal{S}(x) = \mathrm{TopK}(p(x))
+\end{equation}
+$$
+The output becomes:
+
+
+$$
+\begin{equation}
+y(x) = \sum_{e \in \mathcal{S}(x)} p_e(x)\,\mathrm{Expert}_e(x)
+\end{equation}
+$$
+Typically $k=1$ or $k=2$.
+
+# Why MoE increases capacity efficiently
+
+Total parameters:
+
+
+$$
+\begin{equation}
+O(E \cdot d \cdot d_{ff})
+\end{equation}
+$$
+But compute per token:
+
+
+$$
+\begin{equation}
+O(k \cdot d \cdot d_{ff})
+\end{equation}
+$$
+Since $k \ll E$, MoE decouples:
+
+- parameter count
+
+- FLOPs per token
+
+# Differentiability Problem
+
+The TopK operation is non-differentiable:
+
+
+$$
+\begin{equation}
+\mathrm{TopK}(p(x))
+\end{equation}
+$$
+is discrete.
+
+Thus gradients cannot flow through expert selection directly.
+
+# Gradient Estimation Strategies
+
+## Soft routing approximation
+
+Replace TopK with soft mixture:
+
+
+$$
+\begin{equation}
+y(x) = \sum_{e=1}^{E} p_e(x)\,\mathrm{Expert}_e(x)
+\end{equation}
+$$
+This is differentiable but expensive.
+
+## Straight-through estimator
+
+Forward uses TopK, backward uses soft probabilities:
+
+
+$$
+\begin{equation}
+\frac{\partial y}{\partial p}
+\approx
+\text{soft gradient}
+\end{equation}
+$$
+## Gumbel-Softmax (conceptual alternative)
+
+Introduce noise:
+
+
+$$
+\begin{equation}
+p_e =
+\frac{\exp((\log \pi_e + g_e)/\tau)}
+{\sum_j \exp((\log \pi_j + g_j)/\tau)}
+\end{equation}
+$$
+where $g_e$ is Gumbel noise.
+
+As $\tau \to 0$, this approaches discrete sampling.
+
+However, large-scale MoE systems typically avoid Gumbel sampling due to
+instability.
+
+# Load Balancing Problem
+
+A major issue is expert collapse, where only a subset of experts is
+used.
+
+Define:
+
+## Importance
+
+
+$$
+\begin{equation}
+I_e = \sum_{t} p_e(x_t)
+\end{equation}
+$$
+## Load
+
+
+$$
+\begin{equation}
+L_e = \sum_{t} \mathbf{1}[\mathrm{TopK}(p(x_t)) = e]
+\end{equation}
+$$
+# Load balancing loss
+
+A common auxiliary loss is:
+
+
+$$
+\begin{equation}
+\mathcal{L}_{balance}
+=
+E \sum_{e=1}^{E} I_e \cdot L_e
+\end{equation}
+$$
+This encourages uniform usage of experts.
+
+# Expert capacity constraint
+
+Each expert has a maximum token capacity:
+
+
+$$
+\begin{equation}
+C = \frac{\text{batch size}}{E} \cdot \alpha
+\end{equation}
+$$
+If exceeded, tokens are dropped or rerouted.
+
+# Why MoE is difficult to train
+
+MoE introduces:
+
+- routing instability
+
+- gradient noise from sparse activation
+
+- communication overhead in distributed settings
+
+- imbalance across experts
+
+# MoE in distributed systems
+
+Each expert is often placed on a different device.
+
+Thus MoE introduces:
+
+- all-to-all communication
+
+- token dispatch
+
+- token gather
+
+This makes MoE both a model and systems problem.
+
+# Unified Interpretation
+
+MoE can be viewed as:
+
+> a conditional computation mechanism that replaces dense parameter
+> usage with a learned routing policy over a large parameter bank.
+
+# Key Insight
+
+MoE is not simply a model architecture:
+
+
+$$
+\begin{equation}
+\text{MoE} =
+\text{(representation learning)} +
+\text{(discrete routing optimization)} +
+\text{(distributed systems problem)}
+\end{equation}
+$$
+# Autoregressive Inference as Sequential State Evolution
+
+Autoregressive language models factorize sequence probability as:
+
+
+$$
+\begin{equation}
+p(x_1, \dots, x_T)
+=
+\prod_{t=1}^{T} p(x_t \mid x_{<t})
+\end{equation}
+$$
+This induces a fundamental constraint:
+
+> Generation is inherently sequential in time.
+
+Unlike training, tokens cannot be processed in parallel during decoding.
+
+# Why decoding is sequential
+
+At step $t$, the model computes:
+
+
+$$
+\begin{equation}
+p(x_t \mid x_1, \dots, x_{t-1})
+\end{equation}
+$$
+Thus each step depends on all previous hidden states.
+
+This creates a loop:
+
+
+$$
+\begin{equation}
+x_1 \rightarrow x_2 \rightarrow \dots \rightarrow x_T
+\end{equation}
+$$
+# Naive inference cost
+
+Without optimization, each step recomputes all attention layers:
+
+
+$$
+\begin{equation}
+O(T^2 d)
+\end{equation}
+$$
+per generated token, leading to:
+
+
+$$
+\begin{equation}
+O(T^3 d)
+\end{equation}
+$$
+total cost for full generation.
+
+This is computationally infeasible.
+
+# KV Cache
+
+## Key idea
+
+Self-attention at step $t$ only requires past keys and values.
+
+Recall attention:
+
+
+$$
+\begin{equation}
+\mathrm{Attention}(Q,K,V)
+=
+\mathrm{softmax}\left(\frac{QK^T}{\sqrt{d}}\right)V
+\end{equation}
+$$
+At time $t$, we compute:
+
+
+$$
+\begin{align}
+K_{1:t} &= \text{all previous keys}\\
+V_{1:t} &= \text{all previous values}
+\end{align}
+$$
+We store them:
+
+
+$$
+\begin{equation}
+\mathcal{K}_t = [K_1, \dots, K_t], \quad
+\mathcal{V}_t = [V_1, \dots, V_t]
+\end{equation}
+$$
+## Incremental decoding
+
+At step $t+1$:
+
+
+$$
+\begin{align}
+q_{t+1} &= x_{t+1} W_Q\\
+k_{t+1} &= x_{t+1} W_K\\
+v_{t+1} &= x_{t+1} W_V
+\end{align}
+$$
+We compute attention only over cached tensors:
+
+
+$$
+\begin{equation}
+o_{t+1}
+=
+\mathrm{softmax}\left(
+\frac{q_{t+1} \mathcal{K}_t^T}{\sqrt{d}}
+\right)\mathcal{V}_t
+\end{equation}
+$$
+## Memory vs compute tradeoff
+
+KV cache stores:
+
+
+$$
+\begin{equation}
+O(T \cdot d)
+\end{equation}
+$$
+memory per layer.
+
+This avoids recomputation of:
+
+
+$$
+\begin{equation}
+O(T^2 d)
+\end{equation}
+$$
+terms.
+
+# Decoding strategies
+
+## Greedy decoding
+
+
+$$
+\begin{equation}
+x_t = \arg\max p(x_t \mid x_{<t})
+\end{equation}
+$$
+Deterministic but often low diversity.
+
+## Temperature scaling
+
+
+$$
+\begin{equation}
+p_i =
+\frac{\exp(z_i / \tau)}{\sum_j \exp(z_j / \tau)}
+\end{equation}
+$$
+- $\tau < 1$: sharper distribution
+
+- $\tau > 1$: more randomness
+
+## Top-k sampling
+
+Restrict sampling to top $k$ tokens:
+
+
+$$
+\begin{equation}
+\mathcal{V}_k = \mathrm{TopK}(p)
+\end{equation}
+$$
+## Nucleus (top-p) sampling
+
+Select smallest set such that:
+
+
+$$
+\begin{equation}
+\sum_{i \in \mathcal{S}} p_i \ge p
+\end{equation}
+$$
+This adapts dynamically to distribution entropy.
+
+## Beam search
+
+Maintain $B$ candidate sequences:
+
+
+$$
+\begin{equation}
+\{x_{1:t}^{(1)}, \dots, x_{1:t}^{(B)}\}
+\end{equation}
+$$
+Select highest joint probability.
+
+Beam search is rarely used in modern LLM chat due to degeneration
+issues.
+
+# Speculative decoding
+
+## Motivation
+
+Autoregressive decoding is sequential and slow.
+
+Speculative decoding introduces a draft model to propose multiple
+tokens.
+
+## Two-model system
+
+- Small model: fast draft generator
+
+- Large model: verifier
+
+## Algorithm
+
+Draft model generates:
+
+
+$$
+\begin{equation}
+(x_{t+1}, \dots, x_{t+k})
+\end{equation}
+$$
+in parallel.
+
+Large model evaluates them in a single forward pass.
+
+## Acceptance step
+
+Each token is accepted with probability:
+
+
+$$
+\begin{equation}
+\min\left(1,
+\frac{p_{\text{large}}(x)}{p_{\text{draft}}(x)}
+\right)
+\end{equation}
+$$
+Otherwise regeneration occurs.
+
+## Why it works
+
+The key insight is:
+
+> The draft model approximates the target distribution, reducing the
+> number of expensive large-model steps.
+
+Even though verification is required, it is amortized over multiple
+tokens.
+
+# Why KV cache is still required in speculative decoding
+
+Even when using a draft model, the large model still performs attention
+over past tokens.
+
+Thus KV cache remains essential:
+
+- avoids recomputing past attention states
+
+- enables fast verification passes
+
+# Unified view of inference systems
+
+All inference optimizations can be expressed as:
+
+
+$$
+\begin{equation}
+\text{minimize latency}
+\quad
+\text{subject to sequential dependency constraints}
+\end{equation}
+$$
+
+| Technique | Optimized state |
+|----------|-----------------|
+| KV cache | past attention keys/values |
+| Speculative decoding | future token proposals |
+| Sampling methods | output distribution control |
+| Beam search | sequence-level optimization |
+
+# Final insight
+
+Inference in large language models is not simply evaluation of a neural
+network.
+
+It is a constrained sequential decision process with:
+
+- persistent state (KV cache)
+
+- stochastic control (sampling)
+
+- amortized computation (speculative decoding)
+
+All modern systems optimizations reduce to improving this sequential
+computation under memory and latency constraints.

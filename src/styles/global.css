@@ -3,6 +3,7 @@
 @plugin "@tailwindcss/typography";
 @import "@fontsource-variable/outfit";
 @import "@fontsource-variable/geist-mono";
+@import "katex/dist/katex.min.css";
 
 @custom-variant dark (&:is(.dark *));
 

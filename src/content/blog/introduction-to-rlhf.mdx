@@ -1,0 +1,2254 @@
+---
+title: "A Rigorous Derivation of Policy Gradient, Actor-Critic, PPO, RLHF, and GRPO"
+author: Yonathan Aflalo
+publishedAt: "2025-12-20"
+summary: "Derivation of policy gradient methods and modern RLHF variants"
+math: true
+---
+
+
+
+# Introduction
+
+Reinforcement learning (RL) provides a principled framework for
+optimizing sequential decision-making policies in stochastic
+environments. In this context, an agent interacts with a Markov Decision
+Process (MDP) and seeks to maximize an expected cumulative reward.
+
+Policy gradient methods form a cornerstone of modern deep RL, allowing
+the direct optimization of parameterized stochastic policies. These
+methods provide:
+
+- A formal gradient-based procedure for maximizing expected return,
+
+- Flexibility to handle high-dimensional and continuous action spaces,
+
+- Compatibility with function approximation using neural networks.
+
+Despite their generality, vanilla policy gradient algorithms often
+suffer from high variance and unstable updates. Actor-critic methods
+mitigate these issues by introducing a learned value function to
+estimate the advantage, while TRPO and PPO further stabilize policy
+updates by controlling the effective step size in policy space.
+
+Large-scale applications, such as training language models to follow
+instructions, introduce additional challenges:
+
+- Rewards are often not directly observed, requiring learned reward
+  models,
+
+- Value estimation is difficult or costly for high-dimensional discrete
+  sequences,
+
+- Stability and sample efficiency are crucial due to the scale of data
+  and model size.
+
+Reinforcement Learning from Human Feedback (RLHF) addresses these
+challenges by combining:
+
+1.  A pretrained or fine-tuned policy for initialization,
+
+2.  A reward model learned from human preferences,
+
+3.  Stable policy optimization methods such as PPO.
+
+Group Relative Policy Optimization (GRPO) extends RLHF by removing the
+critic entirely and leveraging group-relative baselines, providing a
+more stable and computationally efficient method suitable for
+large-scale language model alignment.
+
+This document provides a comprehensive and rigorous treatment of:
+
+- Policy gradient methods and the advantage formulation,
+
+- Actor-critic algorithms and temporal-difference learning,
+
+- Theoretical foundations including the performance difference lemma,
+
+- Trust-region and proximal optimization methods (TRPO, PPO),
+
+- Reinforcement learning from human feedback and group-relative
+  approaches (RLHF, GRPO).
+
+The exposition emphasizes formal derivations, clear definitions, and
+detailed algorithmic insights, enabling implementation and practical
+understanding from first principles.
+
+# Foundations and Markov Decision Processes
+
+This section establishes the mathematical framework underlying
+reinforcement learning. We adopt a measure-theoretic perspective in
+order to make expectations, probability distributions, and gradients
+well-defined. All subsequent derivations build on these definitions.
+
+## Measurable Spaces and Probability Kernels
+Let 
+$$
+(\mathcal{S}, \mathcal{F}_{\mathcal{S}})
+$$
+ and
+
+$$
+(\mathcal{A}, \mathcal{F}_{\mathcal{A}})
+$$
+  denote measurable state and
+action spaces, respectively. We assume that both spaces are standard
+Borel spaces, which guarantees the existence of regular conditional
+probabilities.
+
+::: definition
+**Definition 1** (Probability Kernel). *A probability kernel from
+$\mathcal{X}$ to $\mathcal{Y}$ is a mapping
+
+$$
+K : \mathcal{X} \times \mathcal{F}_{\mathcal{Y}} \to [0,1]
+$$
+ such
+that:*
+
+1.  *For each fixed $x \in \mathcal{X}$, $K(\cdot \mid x)$ is a
+    probability measure on $\mathcal{Y}$.*
+
+2.  *For each measurable set $B \subseteq \mathcal{Y}$, the function
+    $x \mapsto K(B \mid x)$ is measurable.*
+:::
+
+Probability kernels allow us to define stochastic transitions and
+policies in a mathematically precise way.
+
+---
+
+## Markov Decision Processes
+
+::: definition
+**Definition 2** (Discounted Markov Decision Process). *A discounted
+Markov Decision Process (MDP) is a tuple
+
+$$
+\mathcal{M} = (\mathcal{S}, \mathcal{A}, P, r, \rho, \gamma),
+$$
+where:*
+
+- *$\mathcal{S}$ is the state space;*
+
+- *$\mathcal{A}$ is the action space;*
+
+- *$P(\cdot \mid s,a)$ is a probability kernel on $\mathcal{S}$, called
+  the transition kernel;*
+
+- *$r : \mathcal{S} \times \mathcal{A} \to \mathbb{R}$ is the reward
+  function;*
+
+- *$\rho$ is a probability measure on $\mathcal{S}$, called the initial
+  state distribution;*
+
+- *$\gamma \in (0,1)$ is the discount factor.*
+:::
+
+The discount factor ensures that infinite-horizon returns are
+well-defined. We assume throughout that the reward function is bounded,
+i.e., 
+$$
+|r(s,a)| \leq R_{\max} < \infty,
+\quad
+\forall (s,a) \in \mathcal{S} \times \mathcal{A}.
+$$
+---
+
+## Policies
+
+::: definition
+**Definition 3** (Stochastic Policy). *A stochastic policy is a
+probability kernel 
+$$
+\pi(\cdot \mid s)
+$$
+ from $\mathcal{S}$ to
+$\mathcal{A}$.*
+:::
+
+In this document, we focus on differentiable parametric policies.
+
+::: definition
+**Definition 4** (Parametric Policy). *A parametric policy is a family
+of probability kernels
+
+$$
+\{\pi_\theta(\cdot \mid s)\}_{\theta \in \mathbb{R}^d}
+$$
+ such that for
+every $(s,a)$, the mapping $\theta \mapsto \pi_\theta(a \mid s)$ is
+differentiable.*
+:::
+
+Typical examples include softmax policies in discrete action spaces and
+Gaussian policies in continuous action spaces.
+
+---
+
+## Trajectories and Induced Probability Measures
+
+A policy interacting with an MDP induces a probability distribution over
+infinite trajectories.
+
+::: definition
+**Definition 5** (Trajectory). *A trajectory is an infinite sequence
+
+$$
+\tau = (s_0, a_0, s_1, a_1, s_2, a_2, \dots),
+$$
+ where
+$s_t \in \mathcal{S}$ and $a_t \in \mathcal{A}$.*
+:::
+
+Given a policy $\pi_\theta$, the joint distribution over trajectories is
+defined by 
+$$
+\mathbb{P}_\theta(\tau)
+=
+\rho(s_0)
+\prod_{t=0}^\infty
+\pi_\theta(a_t \mid s_t)
+P(s_{t+1} \mid s_t, a_t).
+$$
+This expression should be interpreted as defining a probability measure
+on the infinite product space
+
+$$
+(\mathcal{S} \times \mathcal{A})^{\mathbb{N}}.
+$$
+---
+
+## Return and Discounted Rewards
+
+::: definition
+**Definition 6** (Return). *The (discounted) return of a trajectory
+$\tau$ is defined as 
+$$
+R(\tau)
+=
+\sum_{t=0}^\infty \gamma^t r(s_t, a_t).
+$$
+*
+:::
+
+Since rewards are bounded and $\gamma < 1$, the series converges
+absolutely almost surely.
+
+---
+
+## Policy Objective
+
+The goal of reinforcement learning is to find a policy that maximizes
+the expected discounted return.
+
+::: definition
+**Definition 7** (Expected Return). *The performance of a policy
+$\pi_\theta$ is defined as 
+$$
+J(\theta)
+=
+\mathbb{E}_{\tau \sim \mathbb{P}_\theta}
+\left[
+R(\tau)
+\right].
+$$
+*
+:::
+
+This expectation is taken jointly over:
+
+- the initial state $s_0 \sim \rho$,
+
+- the stochastic policy $\pi_\theta$,
+
+- the environment dynamics $P$.
+
+The dependence of $J(\theta)$ on $\theta$ is entirely through the
+policy.
+
+---
+
+## Conditional Expectations and Markov Structure
+
+A crucial property of MDPs is conditional independence.
+
+::: proposition
+**Proposition 1** (Markov Property). *Conditioned on $(s_t, a_t)$, the
+next state $s_{t+1}$ is independent of all past states and actions.*
+:::
+
+This property allows us to define value functions and action-value
+functions in terms of conditional expectations.
+
+---
+
+## State-Value and Action-Value Functions
+
+::: definition
+**Definition 8** (State-Value Function). *For a given policy $\pi$, the
+state-value function is 
+$$
+V^\pi(s)
+=
+\mathbb{E}_\pi
+\left[
+\sum_{t=0}^\infty \gamma^t r(s_t,a_t)
+\;\middle|\;
+s_0 = s
+\right].
+$$
+*
+:::
+
+::: definition
+**Definition 9** (Action-Value Function). *The action-value function is
+
+$$
+Q^\pi(s,a)
+=
+\mathbb{E}_\pi
+\left[
+\sum_{t=0}^\infty \gamma^t r(s_t,a_t)
+\;\middle|\;
+s_0 = s, a_0 = a
+\right].
+$$
+*
+:::
+
+Both expectations are taken with respect to the trajectory distribution
+induced by $\pi$ and $P$.
+
+---
+
+## Bellman Equations
+
+The value functions satisfy the Bellman equations.
+
+::: lemma
+**Lemma 1** (Bellman Expectation Equation). *For all
+$s \in \mathcal{S}$, 
+$$
+V^\pi(s)
+=
+\mathbb{E}_{a \sim \pi(\cdot \mid s)}
+\left[
+r(s,a)
++
+\gamma
+\mathbb{E}_{s' \sim P(\cdot \mid s,a)}
+[V^\pi(s')]
+\right].
+$$
+*
+:::
+
+::: lemma
+**Lemma 2** (Bellman Equation for $Q^\pi$). *For all $(s,a)$,
+
+$$
+Q^\pi(s,a)
+=
+r(s,a)
++
+\gamma
+\mathbb{E}_{s' \sim P(\cdot \mid s,a)}
+\left[
+\mathbb{E}_{a' \sim \pi(\cdot \mid s')}
+[Q^\pi(s',a')]
+\right].
+$$
+*
+:::
+
+---
+
+## Why This Formalism Matters
+
+The explicit construction of probability measures and expectations is
+essential for:
+
+- justifying differentiation under the expectation sign,
+
+- proving unbiasedness of gradient estimators,
+
+- understanding variance reduction techniques,
+
+- analyzing trust-region and preference-based objectives.
+
+In the next section, we will build on this foundation to derive the
+policy gradient theorem by differentiating the expected return with
+respect to policy parameters.
+
+# Policy Gradient Methods
+
+In this section we derive the policy gradient theorem from first
+principles. Our goal is to compute the gradient of the expected return
+
+$$
+J(\theta) = \mathbb{E}_{\tau \sim \mathbb{P}_\theta}[R(\tau)]
+$$
+ with
+respect to the policy parameters $\theta$.
+
+Throughout this section, all expectations are taken with respect to the
+trajectory distribution induced by the policy $\pi_\theta$ and the MDP
+dynamics, unless otherwise stated.
+
+---
+
+## Differentiating Expectations over Trajectories
+
+Recall that 
+$$
+J(\theta)=\int R(\tau)\, d\mathbb{P}_\theta(\tau).
+$$
+We assume that:
+
+- $\pi_\theta(a \mid s)$ is differentiable in $\theta$,
+
+- rewards are bounded,
+
+- differentiation and integration can be interchanged.
+
+Under these assumptions, we may write 
+$$
+\nabla_\theta J(\theta)=\nabla_\theta\int R(\tau)\, d\mathbb{P}_\theta(\tau)=\int R(\tau)\, \nabla_\theta d\mathbb{P}_\theta(\tau).
+$$
+---
+
+## Log-Derivative Trick
+
+Using the identity 
+$$
+\nabla_\theta p(x) = p(x)\nabla_\theta \log p(x),
+$$
+we obtain 
+$$
+\nabla_\theta J(\theta)
+=
+\int R(\tau)\,
+\nabla_\theta \log \mathbb{P}_\theta(\tau)\,
+d\mathbb{P}_\theta(\tau)
+=
+\mathbb{E}_{\tau \sim \mathbb{P}_\theta}
+\left[
+R(\tau)\nabla_\theta \log \mathbb{P}_\theta(\tau)
+\right].
+$$
+This identity is the foundation of all policy gradient methods.
+
+---
+
+## Structure of the Trajectory Distribution
+
+Recall that the trajectory probability factorizes as
+
+$$
+\mathbb{P}_\theta(\tau)
+=
+\rho(s_0)
+\prod_{t=0}^\infty
+\pi_\theta(a_t \mid s_t)
+P(s_{t+1} \mid s_t,a_t).
+$$
+Only the policy terms depend on $\theta$. Therefore,
+
+$$
+\log \mathbb{P}_\theta(\tau)
+=
+\log \rho(s_0)
++
+\sum_{t=0}^\infty \log \pi_\theta(a_t \mid s_t)
++
+\sum_{t=0}^\infty \log P(s_{t+1} \mid s_t,a_t).
+$$
+Taking the gradient yields 
+$$
+\nabla_\theta \log \mathbb{P}_\theta(\tau)=
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t).
+$$
+Substituting into the previous expression gives
+
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb{E}
+\left[
+R(\tau)
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\right].
+$$
+This expression is correct but suffers from extremely high variance.
+
+---
+
+## Causality and Reward-to-Go
+
+We now exploit the temporal structure of the MDP to reduce variance.
+
+Write the total return as $R(\tau)
+=\sum_{k=0}^\infty \gamma^k r(s_k,a_k).$
+
+Substituting into the gradient expression: $\nabla_\theta J(\theta)=
+\mathbb{E}
+\left[
+\sum_{t=0}^\infty
+\sum_{k=0}^\infty
+\gamma^k r(s_k,a_k)
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\right].$
+
+We now separate the inner sum into two parts: $\sum_{k=0}^\infty=
+\sum_{k=0}^{t-1}
++
+\sum_{k=t}^\infty.$
+
+---
+
+### Causality Argument
+
+::: lemma
+**Lemma 3** (Causality). *For $k < t$, 
+$$
+\mathbb{E}
+\left[
+\gamma^k r(s_k,a_k)
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\right]
+= 0.
+$$
+*
+:::
+
+::: proof
+*Proof.* For $k < t$, the reward $r(s_k,a_k)$ depends only on
+$(s_0,a_0,\dots,s_k,a_k)$, while
+$\nabla_\theta \log \pi_\theta(a_t \mid s_t)$ depends only on
+$(s_t,a_t)$.
+
+By the Markov property, conditioned on $s_t$, the past is independent of
+$a_t$. Moreover, 
+$$
+\mathbb{E}_{a_t \sim \pi_\theta(\cdot \mid s_t)}
+\left[
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\right]
+=
+\nabla_\theta
+\int \pi_\theta(a_t \mid s_t)\, da_t
+=
+\nabla_\theta 1
+=
+0.
+$$
+ ◻
+:::
+
+---
+
+### Reward-to-Go
+
+By the causality lemma, only rewards from time $t$ onward contribute.
+Define the reward-to-go: 
+$$
+G_t
+=
+\sum_{k=t}^\infty \gamma^{k-t} r(s_k,a_k).
+$$
+Then the policy gradient becomes 
+$$
+\nabla_\theta J(\theta)=
+\mathbb{E}
+\left[
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+G_t
+\right].
+$$
+This estimator has strictly lower variance than using the full return.
+
+---
+
+## Action-Value Function Interpretation
+
+The reward-to-go is a random variable. We now express it in terms of a
+conditional expectation.
+
+::: definition
+**Definition 10** (Action-Value Function). *
+$$
+Q^{\pi_\theta}(s,a)=
+\mathbb{E}_{\pi_\theta}
+\left[
+G_0
+\;\middle|\;
+s_0 = s, a_0 = a
+\right].
+$$
+*
+:::
+
+By time-shift invariance,
+
+$$
+\mathbb{E}[G_t \mid s_t, a_t] = Q^{\pi_\theta}(s_t,a_t).
+$$
+Taking conditional expectation inside the sum yields the *policy
+gradient theorem*.
+
+---
+
+## Policy Gradient Theorem
+
+::: theorem
+**Theorem 1** (Policy Gradient Theorem). *
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb{E}_{\pi_\theta}
+\left[
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+Q^{\pi_\theta}(s_t,a_t)
+\right].
+$$
+*
+:::
+
+This expression depends only on quantities local in time.
+
+---
+
+## Monte Carlo Estimation
+
+In practice, the expectation is approximated using sampled trajectories 
+
+$$
+\{\tau^{(i)}\}_{i=1}^N \sim \mathbb{P}_\theta
+$$
+.
+
+The Monte Carlo estimator is 
+$$
+\widehat{\nabla_\theta J}=
+\frac{1}{N}
+\sum_{i=1}^N
+\sum_{t=0}^{T_i}
+\nabla_\theta \log \pi_\theta(a_t^{(i)} \mid s_t^{(i)})
+G_t^{(i)}.
+$$
+By the law of large numbers, this estimator converges almost surely to
+the true gradient as $N \to \infty$.
+
+---
+
+## Variance Considerations
+
+Although unbiased, the estimator suffers from:
+
+- long-horizon variance due to $G_t$,
+
+- sensitivity to reward scaling,
+
+- poor sample efficiency.
+
+These issues motivate the introduction of baselines and advantage
+functions, which we study in the next section.
+
+# Baselines and Advantage Functions
+
+The policy gradient theorem expresses the gradient of the expected
+return as 
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb{E}_{\pi_\theta}
+\left[
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+Q^{\pi_\theta}(s_t,a_t)
+\right].
+$$
+While this estimator is unbiased, it typically exhibits high variance.
+In this section, we introduce *baselines*, prove that they do not bias
+the gradient, and show that the resulting formulation naturally leads to
+the advantage function.
+
+---
+
+## Baselines and Unbiasedness
+
+We begin by formalizing the notion of a baseline.
+
+::: definition
+**Definition 11** (Baseline). *A baseline is a measurable function
+
+$$
+b : \mathcal{S} \to \mathbb{R}
+$$
+ that depends only on the state.*
+:::
+
+Baselines are used to reduce variance in gradient estimates without
+altering their expectation.
+
+---
+
+## Baseline Invariance Theorem
+
+::: theorem
+**Theorem 2** (Baseline Invariance). *For any measurable function
+$b : \mathcal{S} \to \mathbb{R}$, 
+$$
+\mathbb{E}_{\pi_\theta}
+\left[
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)\, b(s_t)
+\right]
+=
+0.
+$$
+*
+:::
+
+::: proof
+*Proof.* It suffices to prove that each term in the sum has zero
+expectation. Fix $t$. Then 
+$$
+\mathbb{E}
+\left[
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)\, b(s_t)
+\right]
+=
+\mathbb{E}_{s_t}
+\left[
+b(s_t)
+\mathbb{E}_{a_t \sim \pi_\theta(\cdot \mid s_t)}
+\left[
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\right]
+\right].
+$$
+Since 
+$$
+\mathbb{E}_{a_t \sim \pi_\theta(\cdot \mid s_t)}
+\left[
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\right]
+=
+\nabla_\theta
+\int \pi_\theta(a_t \mid s_t)\, da_t
+=
+\nabla_\theta 1
+=
+0,
+$$
+ the result follows. ◻
+:::
+
+---
+
+## Baseline-Augmented Policy Gradient
+
+Using the baseline invariance theorem, we may subtract any baseline from
+the action-value function inside the policy gradient:
+
+
+$$
+\nabla_\theta J(\theta)=
+\mathbb{E}_{\pi_\theta}
+\left[
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\bigl(
+Q^{\pi_\theta}(s_t,a_t) - b(s_t)
+\bigr)
+\right].
+$$
+This expression remains unbiased for any choice of $b$.
+
+---
+
+## State-Value Function as a Baseline
+
+A particularly important choice of baseline is the state-value function.
+
+::: definition
+**Definition 12** (State-Value Function). *
+$$
+V^{\pi}(s)
+=
+\mathbb{E}_{a \sim \pi(\cdot \mid s)}
+\left[
+Q^{\pi}(s,a)
+\right].
+$$
+*
+:::
+
+This definition is equivalent to the conditional expectation of the
+return given the state: 
+$$
+V^\pi(s)
+=
+\mathbb{E}_{\pi}
+\left[
+G_0
+\;\middle|\;
+s_0 = s
+\right].
+$$
+---
+
+## Advantage Function
+
+::: definition
+**Definition 13** (Advantage Function). *The advantage function is
+defined as 
+$$
+A^\pi(s,a)
+=
+Q^\pi(s,a) - V^\pi(s).
+$$
+*
+:::
+
+The advantage measures how much better (or worse) an action is compared
+to the average action at a given state under policy $\pi$.
+
+---
+
+## Policy Gradient in Advantage Form
+
+Using the state-value function as a baseline yields
+
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb{E}_{\pi_\theta}
+\left[
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+A^{\pi_\theta}(s_t,a_t)
+\right].
+$$
+This is the standard form used in modern policy gradient methods.
+
+---
+
+## Why the Advantage is the Correct Signal
+
+The advantage formulation has several important properties:
+
+- $\mathbb{E}_{a \sim \pi(\cdot \mid s)}[A^\pi(s,a)] = 0$ for all $s$,
+
+- actions better than average produce positive updates,
+
+- actions worse than average produce negative updates,
+
+- variance is minimized among all state-dependent baselines.
+
+In particular, the state-value function is the optimal baseline in the
+mean-squared sense.
+
+---
+
+## Optimal Baseline (Variance Minimization)
+
+Consider a fixed state $s$. The variance of the gradient estimator
+
+$$
+g(a) = \nabla_\theta \log \pi_\theta(a \mid s) (Q^\pi(s,a) - b(s))
+$$
+is minimized when 
+$$
+b(s) = V^\pi(s).
+$$
+This result justifies the use of the advantage function from a
+variance-reduction perspective.
+
+---
+
+## Sample-Based Estimation
+
+In practice, $Q^\pi$ and $V^\pi$ are unknown and must be estimated.
+
+Given a sampled trajectory, we approximate:
+
+$$
+Q^\pi(s_t,a_t) \approx G_t,
+\qquad
+V^\pi(s_t) \approx \hat{V}(s_t).
+$$
+The resulting empirical advantage estimate is
+
+$$
+\hat{A}_t = G_t - \hat{V}(s_t).
+$$
+This estimator is unbiased if $\hat{V} = V^\pi$, and biased otherwise.
+
+---
+
+## Bias-Variance Tradeoff
+
+Using an approximate value function introduces bias but dramatically
+reduces variance. This tradeoff is at the heart of modern reinforcement
+learning algorithms.
+
+The next section formalizes this idea through actor-critic methods and
+temporal-difference learning.
+
+# Actor-Critic Methods and Temporal-Difference Learning
+
+Policy gradient methods estimate 
+$$
+\nabla_\theta J(\theta)
+=\mathbb{E}_{\pi_\theta}
+\left[
+\sum_{t=0}^\infty
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+A^{\pi_\theta}(s_t,a_t)
+\right].
+$$
+However, computing the true advantage function requires knowledge of the
+environment dynamics and the policy's long-term behavior. Actor-critic
+methods address this by introducing a parametric approximation of the
+value function, called the *critic*, and using it to construct a
+low-variance estimator of the policy gradient.
+
+---
+
+## Separation of Roles: Actor and Critic
+
+Actor-critic methods maintain two sets of parameters:
+
+- **Actor parameters** $\theta$, defining the policy $\pi_\theta$
+
+- **Critic parameters** $w$, defining a value function approximation
+  $V_w \approx V^{\pi_\theta}$
+
+The actor improves the policy by gradient ascent, while the critic
+evaluates the current policy by solving an approximate Bellman equation.
+
+---
+
+## Value Function Approximation
+
+::: definition
+**Definition 14** (Parametric Value Function). *Let
+
+$$
+V_w : \mathcal{S} \to \mathbb{R}
+$$
+ be a differentiable function
+approximator parameterized by $w \in \mathbb{R}^m$, intended to
+approximate the true state-value function $V^{\pi_\theta}$.*
+:::
+
+The critic is trained to minimize the discrepancy between its
+predictions and the Bellman target.
+
+---
+
+## Bellman Equation
+
+The true value function satisfies the Bellman expectation equation:
+
+$$
+V^\pi(s)
+=
+\mathbb{E}_{a \sim \pi(\cdot \mid s)}
+\left[
+r(s,a)
++
+\gamma
+\mathbb{E}_{s' \sim P(\cdot \mid s,a)}
+V^\pi(s')
+\right].
+$$
+This fixed-point equation is the foundation of value-based learning.
+
+---
+
+## Temporal-Difference Learning
+
+Rather than estimating $V^\pi$ via Monte Carlo returns, actor-critic
+methods use bootstrapped updates.
+
+::: definition
+**Definition 15** (Temporal-Difference Error). *The temporal-difference
+(TD) error at time $t$ is defined as 
+$$
+\delta_t
+=
+r_t + \gamma V_w(s_{t+1}) - V_w(s_t).
+$$
+*
+:::
+
+The TD error measures the instantaneous inconsistency of the critic with
+respect to the Bellman equation.
+
+---
+
+## Critic Objective
+
+The critic parameters $w$ are updated by minimizing the mean-squared TD
+error: 
+$$
+\mathcal{L}_{\mathrm{critic}}(w)
+=
+\mathbb{E}_{\pi_\theta}
+\left[
+\delta_t^2
+\right].
+$$
+The gradient descent update is
+
+$$
+w \leftarrow w - \alpha_w \nabla_w \delta_t^2.
+$$
+---
+
+## TD Error as an Advantage Estimator
+
+The TD error is not equal to the advantage function, but its expectation
+recovers it.
+
+::: theorem
+**Theorem 3** (TD Error and Advantage). *If $V_w = V^{\pi_\theta}$, then
+
+$$
+\mathbb{E}
+\left[
+\delta_t
+\;\middle|\;
+s_t = s, a_t = a
+\right]
+=
+A^{\pi_\theta}(s,a).
+$$
+*
+:::
+
+::: proof
+*Proof.* Conditioning on $s_t = s, a_t = a$,
+
+$$
+\mathbb{E}[\delta_t \mid s_t,a_t]
+=
+\mathbb{E}
+\left[
+r_t + \gamma V^{\pi_\theta}(s_{t+1}) - V^{\pi_\theta}(s_t)
+\;\middle|\;
+s_t,a_t
+\right].
+$$
+By the definition of the action-value function, 
+$$
+Q^{\pi_\theta}(s,a)=
+\mathbb{E}
+\left[
+r_t + \gamma V^{\pi_\theta}(s_{t+1})
+\;\middle|\;
+s_t = s, a_t = a
+\right].
+$$
+Substituting yields 
+$$
+\mathbb{E}[\delta_t \mid s_t,a_t]=
+Q^{\pi_\theta}(s,a) - V^{\pi_\theta}(s)
+=
+A^{\pi_\theta}(s,a).
+$$
+ ◻
+:::
+
+---
+
+## Actor Update Using TD Error
+
+Using the above result, the policy gradient may be written as
+
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb{E}
+\left[
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+A^{\pi_\theta}(s_t,a_t)
+\right]
+=
+\mathbb{E}
+\left[
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)
+\mathbb{E}[\delta_t \mid s_t,a_t]
+\right].
+$$
+Exchanging expectations yields the actor update:
+
+$$
+\nabla_\theta J(\theta)
+=
+\mathbb{E}
+\left[
+\nabla_\theta \log \pi_\theta(a_t \mid s_t)\, \delta_t
+\right].
+$$
+---
+
+## Bias Introduced by an Imperfect Critic
+
+When $V_w \neq V^{\pi_\theta}$, the TD error becomes a biased estimator
+of the advantage: 
+$$
+\mathbb{E}[\delta_t \mid s_t,a_t]
+\neq A^{\pi_\theta}(s_t,a_t).
+$$
+However, the variance reduction often outweighs this bias in practice.
+
+---
+
+## Two-Time-Scale Stochastic Approximation
+
+Actor-critic methods rely on two learning rates:
+
+$$
+\alpha_w \gg \alpha_\theta.
+$$
+The critic converges rapidly to a neighborhood of $V^{\pi_\theta}$,
+while the actor evolves slowly.
+
+Under standard assumptions on step sizes and function approximation,
+this scheme converges to a locally optimal policy.
+
+---
+
+## Online and Incremental Updates
+
+Actor-critic methods support fully online updates: 
+$$
+\begin{align*}
+\delta_t &= r_t + \gamma V_w(s_{t+1}) - V_w(s_t), \\
+w &\leftarrow w + \alpha_w \delta_t \nabla_w V_w(s_t), \\
+\theta &\leftarrow \theta + \alpha_\theta \delta_t \nabla_\theta \log \pi_\theta(a_t \mid s_t).
+\end{align*}
+$$
+These updates interleave policy improvement and policy evaluation at
+every step.
+
+---
+
+## Interpretation
+
+Actor-critic methods can be viewed as:
+
+- approximate policy iteration,
+
+- stochastic gradient ascent on $J(\theta)$,
+
+- bootstrapped advantage estimation.
+
+They form the backbone of modern deep reinforcement learning algorithms.
+
+---
+
+## Limitations
+
+Despite their success, actor-critic methods suffer from:
+
+- instability from critic misestimation,
+
+- sensitivity to learning rates,
+
+- bias from bootstrapping,
+
+- potential value function collapse.
+
+These issues motivate trust-region methods and variance-controlled
+estimators, which we introduce next.
+
+# Discounted State Visitation and Performance Difference Lemma
+
+Policy gradient methods optimize the expected return 
+$$
+J(\pi)=
+\mathbb{E}_{\pi}
+\left[
+\sum_{t=0}^\infty \gamma^t r(s_t,a_t)
+\right].
+$$
+To reason about *finite* policy updates and their effect on performance,
+we require a way to compare the value of two different policies. This
+comparison is formalized by the performance difference lemma.
+
+---
+
+## Discounted State Visitation Distribution
+
+We begin by defining the discounted state visitation distribution, which
+plays a central role in policy comparison.
+
+::: definition
+**Definition 16** (Discounted State Visitation Distribution). *Let $\pi$
+be a stationary policy. The discounted state visitation distribution
+induced by $\pi$ is 
+$$
+d^\pi(s)
+=
+(1-\gamma)
+\sum_{t=0}^\infty \gamma^t
+\mathbb{P}_\pi(s_t = s),
+\qquad s \in \mathcal{S}.
+$$
+*
+:::
+
+---
+
+## Properties of $d^\pi$
+
+::: proposition
+**Proposition 2**. *The distribution $d^\pi$ satisfies:*
+
+1.  *$d^\pi(s) \ge 0$ for all $s$,*
+
+2.  *$\sum_{s \in \mathcal{S}} d^\pi(s) = 1$,*
+
+3.  *For any bounded measurable function
+    $f : \mathcal{S} \to \mathbb{R}$, 
+$$
+\mathbb{E}_{s \sim d^\pi}[f(s)]
+    =
+    (1-\gamma)
+    \mathbb{E}_\pi
+    \left[
+    \sum_{t=0}^\infty \gamma^t f(s_t)
+    \right].
+$$
+*
+:::
+
+::: proof
+*Proof.* The claims follow directly from the definition and Fubini's
+theorem. ◻
+:::
+
+---
+
+## Expected Return in Terms of $d^\pi$
+
+The expected return can be rewritten as 
+$$
+J(\pi)=
+\frac{1}{1-\gamma}
+\mathbb{E}_{s \sim d^\pi,\, a \sim \pi(\cdot \mid s)}
+\left[
+r(s,a)
+\right].
+$$
+This representation highlights that $J(\pi)$ depends on both the state
+visitation frequencies and the action distribution.
+
+---
+
+## Action-Value Function Recap
+
+Recall the definition of the action-value function: 
+$$
+Q^\pi(s,a)=
+\mathbb{E}_\pi
+\left[
+\sum_{t=0}^\infty \gamma^t r(s_t,a_t)
+\;\middle|\;
+s_0 = s, a_0 = a
+\right].
+$$
+The value function satisfies 
+$$
+V^\pi(s)=
+\mathbb{E}_{a \sim \pi(\cdot \mid s)}[Q^\pi(s,a)].
+$$
+---
+
+## Advantage Function Recap
+
+The advantage function is defined as 
+$$
+A^\pi(s,a)=
+Q^\pi(s,a) - V^\pi(s).
+$$
+It measures the relative value of taking action $a$ at state $s$
+compared to the average action under $\pi$.
+
+---
+
+## Performance Difference Lemma
+
+We now state the main result.
+
+::: lemma
+**Lemma 4** (Performance Difference Lemma). *Let $\pi$ and $\pi'$ be two
+stationary policies. Then 
+$$
+J(\pi') - J(\pi)=
+\frac{1}{1-\gamma}
+\mathbb{E}_{s \sim d^{\pi'}}
+\left[
+\mathbb{E}_{a \sim \pi'(\cdot \mid s)}
+\left[
+A^\pi(s,a)
+\right]
+\right].
+$$
+*
+:::
+
+---
+
+## Proof of the Performance Difference Lemma
+
+::: proof
+*Proof.* Consider the quantity 
+$$
+\Delta_t
+=
+\gamma^t
+\left(
+r(s_t,a_t)
++
+\gamma V^\pi(s_{t+1})
+-
+V^\pi(s_t)
+\right).
+$$
+Taking expectations under $\pi'$, 
+$$
+\mathbb{E}_{\pi'}[\Delta_t]=
+\mathbb{E}_{\pi'}
+\left[
+\gamma^t r(s_t,a_t)
+\right]
++
+\mathbb{E}_{\pi'}
+\left[
+\gamma^{t+1} V^\pi(s_{t+1})
+-
+\gamma^t V^\pi(s_t)
+\right].
+$$
+Summing over $t \ge 0$, the second term telescopes: 
+$$
+\sum_{t=0}^\infty
+\mathbb{E}_{\pi'}
+\left[
+\gamma^{t+1} V^\pi(s_{t+1})
+-
+\gamma^t V^\pi(s_t)
+\right]=- \mathbb{E}_{s_0 \sim \rho}[V^\pi(s_0)].
+$$
+Therefore, 
+$$
+\sum_{t=0}^\infty \mathbb{E}_{\pi'}[\Delta_t]=
+J(\pi') - J(\pi).
+$$
+Now condition on $s_t$: 
+$$
+\mathbb{E}_{\pi'}[\Delta_t \mid s_t]=
+\gamma^t
+\left(
+\mathbb{E}_{a \sim \pi'(\cdot \mid s_t)}
+\left[
+r(s_t,a)
++
+\gamma \mathbb{E}_{s' \sim P}[V^\pi(s')]
+\right]
+-
+V^\pi(s_t)
+\right).
+$$
+By definition of the action-value function, 
+$$
+\mathbb{E}_{a \sim \pi'}
+\left[
+r(s_t,a)
++
+\gamma \mathbb{E}_{s'} V^\pi(s')
+\right]
+=
+V^\pi(s_t)
++
+\mathbb{E}_{a \sim \pi'}[A^\pi(s_t,a)].
+$$
+Thus, 
+$$
+\mathbb{E}_{\pi'}[\Delta_t]=
+\mathbb{E}_{\pi'}
+\left[
+\gamma^t
+\mathbb{E}_{a \sim \pi'(\cdot \mid s_t)}
+[A^\pi(s_t,a)]
+\right].
+$$
+Summing over $t$ and using the definition of $d^{\pi'}$,
+
+$$
+J(\pi') - J(\pi)
+=
+\frac{1}{1-\gamma}
+\mathbb{E}_{s \sim d^{\pi'}}
+\left[
+\mathbb{E}_{a \sim \pi'}[A^\pi(s,a)]
+\right].
+$$
+ ◻
+:::
+
+---
+
+## Interpretation
+
+The performance difference lemma shows that:
+
+- Policy improvement depends on the expected advantage under the new
+  policy,
+
+- The expectation is taken over the new policy's state distribution,
+
+- Exact evaluation requires knowledge of $d^{\pi'}$.
+
+This result is exact but not directly usable for optimization.
+
+---
+
+## Implications for Policy Optimization
+
+Since $d^{\pi'}$ depends on the new policy, direct optimization is
+intractable. Trust-region methods approximate $d^{\pi'}$ with $d^\pi$ to
+obtain a tractable surrogate objective.
+
+This approximation is the foundation of TRPO and PPO.
+
+# Trust Region Policy Optimization (TRPO)
+
+## Motivation
+
+Vanilla policy gradient methods perform unconstrained gradient ascent on
+
+$$
+J(\pi_\theta)
+=
+\mathbb{E}_{\pi_\theta}\Big[\sum_{t=0}^\infty \gamma^t r(s_t,a_t)\Big].
+$$
+However, small changes in parameters $\theta$ can induce large changes
+in the policy distribution $\pi_\theta(a\mid s)$, potentially decreasing
+performance.
+
+The *Performance Difference Lemma* motivates updating the policy
+conservatively:
+
+$$
+J(\pi') - J(\pi) = \frac{1}{1-\gamma} \mathbb{E}_{s \sim d^{\pi'}} \big[ \mathbb{E}_{a \sim \pi'}[A^\pi(s,a)] \big].
+$$
+Since the expectation is taken over $d^{\pi'}$, we cannot compute it
+exactly without running $\pi'$. TRPO addresses this by:
+
+1.  Approximating $d^{\pi'} \approx d^\pi$ for small policy changes,
+
+2.  Adding a trust-region constraint to ensure $\pi'$ stays close to
+    $\pi$.
+
+---
+
+## Surrogate Objective
+
+Define the *surrogate objective* based on the current policy $\pi$:
+
+$$
+L_\pi(\pi') := \mathbb{E}_{s \sim d^\pi, a \sim \pi'}[A^\pi(s,a)].
+$$
+Using importance sampling, this can be rewritten as
+
+$$
+L_\pi(\pi') = \mathbb{E}_{s \sim d^\pi, a \sim \pi} \Big[ \frac{\pi'(a \mid s)}{\pi(a \mid s)} A^\pi(s,a) \Big].
+$$
+This objective is tractable because it depends on $d^\pi$, which is
+known from trajectories sampled under $\pi$.
+
+---
+
+## KL-Constrained Optimization Problem
+
+To ensure that $\pi'$ does not deviate too far from $\pi$, TRPO imposes
+a constraint using the KL divergence:
+
+::: definition
+**Definition 17** (Average KL Divergence).
+*
+$$
+\bar{D}_{\mathrm{KL}}(\pi \| \pi') := \mathbb{E}_{s \sim d^\pi}\Big[ D_{\mathrm{KL}}(\pi(\cdot \mid s) \,\|\, \pi'(\cdot \mid s)) \Big].
+$$
+*
+:::
+
+The TRPO optimization problem is: 
+$$
+\begin{aligned}
+\max_{\pi'} & \quad L_\pi(\pi') \\
+\text{s.t.} & \quad \bar{D}_{\mathrm{KL}}(\pi \| \pi') \le \delta,
+\end{aligned}
+$$
+ where $\delta > 0$ is a small constant specifying the
+trust-region radius.
+
+---
+
+## Linearization and Quadratic Approximation
+
+Let $\pi_\theta$ be parameterized by $\theta$. Linearizing the surrogate
+objective around $\theta_0$ and using a second-order approximation for
+the KL constraint yields:
+
+
+$$
+L_\pi(\pi_\theta) \approx L_\pi(\pi_{\theta_0}) + g^\top (\theta - \theta_0), \quad
+\bar{D}_{\mathrm{KL}}(\pi_{\theta_0} \| \pi_\theta) \approx \frac{1}{2} (\theta - \theta_0)^\top F (\theta - \theta_0),
+$$
+where 
+$$
+g = \nabla_\theta L_\pi(\pi_\theta)\big|_{\theta_0}, \quad
+F = \mathbb{E}_{s \sim d^\pi, a \sim \pi_\theta} \big[ \nabla_\theta \log \pi_\theta(a \mid s) \nabla_\theta \log \pi_\theta(a \mid s)^\top \big]
+$$
+is the Fisher information matrix.
+
+The solution of the constrained optimization is the *natural gradient*
+update: 
+$$
+\theta_{k+1} = \theta_k + \alpha F^{-1} g,
+$$
+ where $\alpha$ is
+chosen to satisfy the KL constraint.
+
+---
+
+## Properties and Guarantees
+
+- TRPO guarantees monotonic improvement:
+  
+$$
+J(\pi') \ge J(\pi) - \mathcal{O}\Big(\frac{\gamma}{(1-\gamma)^2} \delta\Big),
+$$
+  provided $\delta$ is small.
+
+- By controlling the KL divergence, TRPO prevents catastrophic drops in
+  performance.
+
+- The linearization and quadratic approximation make the update
+  practical but require conjugate gradient methods and line search.
+
+---
+
+## Limitations
+
+Despite its theoretical appeal, TRPO has practical drawbacks:
+
+- Second-order optimization is computationally expensive,
+
+- Requires large batch sizes for accurate Fisher estimates,
+
+- Line search and conjugate gradient are complex to implement,
+
+- Scaling to large neural networks is difficult.
+
+These limitations motivate the simpler *Proximal Policy Optimization
+(PPO)*, which we present next.
+
+# Proximal Policy Optimization (PPO)
+
+## Motivation
+
+While TRPO provides theoretical guarantees, it is computationally
+expensive due to:
+
+- Second-order optimization (Fisher matrix),
+
+- Conjugate gradient and line search,
+
+- Large batch requirements for stability.
+
+PPO approximates TRPO with a first-order method that:
+
+1.  Avoids explicit second-order computations,
+
+2.  Maintains stability via a *clipped surrogate objective*,
+
+3.  Can be efficiently implemented with standard stochastic gradient
+    descent.
+
+---
+
+## Probability Ratio and Surrogate Objective
+
+Let $\pi_{\theta_{\mathrm{old}}}$ denote the current policy. Define the
+probability ratio:
+
+
+$$
+r_t(\theta) := \frac{\pi_\theta(a_t \mid s_t)}{\pi_{\theta_{\mathrm{old}}}(a_t \mid s_t)}.
+$$
+The unclipped surrogate objective is:
+
+
+$$
+L^{\mathrm{PG}}(\theta) := \mathbb{E}\big[ r_t(\theta) \hat{A}_t \big],
+$$
+where $\hat{A}_t$ is an estimator of the advantage function, e.g., Monte
+Carlo return, TD error, or GAE.
+
+---
+
+## Clipped Objective
+
+To prevent large policy updates that could destabilize training, PPO
+introduces a clipping mechanism:
+
+::: definition
+**Definition 18** (PPO Clipped Objective).
+*
+$$
+L^{\mathrm{PPO}}(\theta) := \mathbb{E} \Big[ \min \big( r_t(\theta) \hat{A}_t, \; \mathrm{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_t \big) \Big],
+$$
+*
+
+*where $\epsilon > 0$ is a hyperparameter controlling the maximum
+allowed deviation of $r_t$ from $1$.*
+:::
+
+Intuition:
+
+- If $\hat{A}_t > 0$, increasing $r_t$ beyond $1+\epsilon$ does not
+  further increase the objective.
+
+- If $\hat{A}_t < 0$, decreasing $r_t$ below $1-\epsilon$ does not
+  further decrease the objective.
+
+This enforces a *soft trust region* similar in spirit to TRPO, but in a
+first-order, easily computable manner.
+
+---
+
+## Actor-Critic Variant with PPO
+
+PPO is typically used in an actor-critic framework. Let $V_w(s)$ denote
+the critic parameterized by $w$.
+
+#### Advantage Estimation
+
+The Generalized Advantage Estimator (GAE) is commonly used:
+
+
+$$
+\delta_t = r_t + \gamma V_w(s_{t+1}) - V_w(s_t), \quad
+\hat{A}_t^{\mathrm{GAE}(\gamma,\lambda)} = \sum_{l=0}^{\infty} (\gamma \lambda)^l \delta_{t+l}.
+$$
+Here, $\lambda \in [0,1]$ controls the bias-variance tradeoff:
+
+- $\lambda = 0$: low-variance, one-step TD advantage,
+
+- $\lambda = 1$: unbiased, high-variance Monte Carlo advantage.
+
+#### Actor Objective
+
+The actor maximizes the PPO clipped objective using
+$\hat{A}_t = \hat{A}_t^{\mathrm{GAE}}$:
+
+
+$$
+L^{\mathrm{PPO}}(\theta) = \mathbb{E} \Big[ \min \big( r_t(\theta) \hat{A}_t, \; \mathrm{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_t \big) \Big].
+$$
+#### Critic Objective
+
+The critic minimizes the squared TD or Monte Carlo error:
+
+
+$$
+L_{\mathrm{value}}(w) = \mathbb{E} \big[ (V_w(s_t) - \hat{V}_t)^2 \big],
+$$
+where $\hat{V}_t$ is a bootstrapped return:
+
+
+$$
+\hat{V}_t = \sum_{l=0}^{\infty} \gamma^l r_{t+l} \quad \text{or using TD bootstrap: } r_t + \gamma V_w(s_{t+1}).
+$$
+#### Entropy Regularization
+
+An entropy bonus is often added to encourage exploration:
+
+
+$$
+L_{\mathrm{entropy}}(\theta) = \mathbb{E} \big[ \mathcal{H}(\pi_\theta(\cdot \mid s_t)) \big].
+$$
+#### Combined Objective
+
+The full PPO actor-critic objective is:
+
+
+$$
+L(\theta, w) = L^{\mathrm{PPO}}(\theta) - c_v L_{\mathrm{value}}(w) + c_e L_{\mathrm{entropy}}(\theta),
+$$
+where $c_v, c_e > 0$ are coefficients.
+
+---
+
+## Practical Implementation Notes
+
+- Mini-batch stochastic gradient descent or Adam optimizer is used.
+
+- Multiple epochs over the same batch can improve sample efficiency.
+
+- GAE hyperparameters $(\gamma, \lambda)$ and clipping $\epsilon$ are
+  tuned to balance stability and learning speed.
+
+- PPO provides empirical robustness close to TRPO without requiring
+  second-order optimization or line search.
+
+---
+
+## Summary
+
+- PPO approximates TRPO using a first-order, clipped surrogate
+  objective.
+
+- Clipping ensures soft trust-region behavior, stabilizing updates.
+
+- Advantage estimation (e.g., GAE) and entropy regularization improve
+  learning efficiency.
+
+- PPO is widely used in modern reinforcement learning due to its
+  simplicity, scalability, and empirical performance.
+
+# Reinforcement Learning from Human Feedback (RLHF)
+
+## Motivation
+
+Large language models (LLMs) pretrained with maximum likelihood
+estimation (MLE) learn to model the distribution of text:
+
+$$
+\max_\theta \mathbb{E}_{x \sim \mathcal{D}} \Big[ \sum_{t=1}^T \log p_\theta(x_t \mid x_{<t}) \Big].
+$$
+However, MLE does not explicitly optimize for:
+
+- Helpfulness,
+
+- Safety,
+
+- Alignment with human preferences.
+
+RLHF introduces a learned reward function $r_\phi(x,y)$ that encodes
+human judgment and optimizes the policy to maximize this reward using
+reinforcement learning.
+
+---
+
+## Three Stages of RLHF
+
+RLHF proceeds in three stages:
+
+1.  **Supervised Fine-Tuning (SFT):** Learn an instruction-following
+    policy $\pi_{\mathrm{SFT}}$ using human demonstrations.
+
+2.  **Reward Model (RM) Training:** Learn a reward model $r_\phi(x,y)$
+    from human preference comparisons.
+
+3.  **Policy Optimization:** Optimize $\pi_\theta$ to maximize expected
+    reward using PPO.
+
+---
+
+## Stage I: Supervised Fine-Tuning (SFT)
+
+Given a dataset of prompt-response pairs $(x, y^*)$, train the policy
+via maximum likelihood:
+
+
+$$
+\max_\theta \; \mathbb{E}_{(x,y^*)} [ \log \pi_\theta(y^* \mid x) ].
+$$
+This yields an initial policy $\pi_{\mathrm{SFT}}$ that:
+
+- Provides a reasonable starting point for RL,
+
+- Serves as a reference policy for KL regularization.
+
+---
+
+## Stage II: Reward Model (RM) Training
+
+### Preference Data
+
+Humans provide relative feedback in the form of comparisons:
+
+
+$$
+(x, y^+, y^-), \quad \text{with } y^+ \succ y^-.
+$$
+This avoids absolute score calibration and aligns training with
+comparative human judgments.
+
+### Reward Model Architecture
+
+The reward model $r_\phi(x,y)$ is typically:
+
+- A transformer initialized from pretraining or SFT,
+
+- Augmented with a scalar output head representing latent human
+  preference,
+
+- Fine-tuned on the preference dataset.
+
+### Reward Model Loss
+
+Using a Bradley-Terry or logistic formulation:
+
+
+$$
+\mathcal{L}_{\mathrm{RM}}(\phi) = - \mathbb{E}_{(x, y^+, y^-)} \Big[ \log \sigma(r_\phi(x, y^+) - r_\phi(x, y^-)) \Big],
+$$
+where $\sigma(z) = \frac{1}{1 + e^{-z}}$ is the logistic sigmoid. This
+encourages $r_\phi(x, y^+) > r_\phi(x, y^-)$.
+
+---
+
+## Stage III: Policy Optimization with PPO
+
+Treat $r_\phi(x,y)$ as a fixed reward function. Define the RL objective:
+
+
+$$
+J(\theta) = \mathbb{E}_{y \sim \pi_\theta(\cdot \mid x)}[ r_\phi(x, y) ].
+$$
+Since rewards are non-differentiable with respect to discrete tokens,
+policy gradient methods (e.g., PPO) are used.
+
+#### KL Regularization
+
+To prevent policy drift away from the SFT distribution:
+
+
+$$
+\tilde{r}_t = r_\phi(x_t, y_t) - \beta D_{\mathrm{KL}} \big( \pi_\theta(\cdot \mid x_t) \| \pi_{\mathrm{SFT}}(\cdot \mid x_t) \big),
+$$
+with $\beta > 0$ controlling the strength of the penalty.
+
+#### Advantage Estimation
+
+Using a critic $V_w(s)$ and GAE:
+
+
+$$
+\delta_t = \tilde{r}_t + \gamma V_w(s_{t+1}) - V_w(s_t), \quad
+\hat{A}_t = \sum_{l=0}^\infty (\gamma \lambda)^l \delta_{t+l}.
+$$
+#### Actor-Critic PPO Objective
+
+
+$$
+L(\theta, w) = \mathbb{E} \Big[ \min(r_t(\theta) \hat{A}_t, \; \mathrm{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_t ) \Big] - c_v L_{\mathrm{value}}(w) + c_e \mathcal{H}(\pi_\theta).
+$$
+---
+
+## Summary
+
+- Pretraining learns general language modeling,
+
+- SFT aligns the model to follow instructions,
+
+- Reward model captures human preferences via comparisons,
+
+- PPO optimizes the policy to maximize expected learned reward,
+
+- KL regularization ensures stability and prevents distribution shift.
+
+# Group Relative Policy Optimization (GRPO)
+
+## Motivation
+
+PPO-based RLHF relies on a learned critic to estimate advantages.
+However, this introduces:
+
+- Bias when the critic is misestimated,
+
+- Value function collapse in high-variance tasks,
+
+- Extra computational cost.
+
+GRPO addresses these issues by replacing the critic with a
+*group-relative baseline*, leveraging multiple samples per prompt to
+compute relative advantages.
+
+---
+
+## Group-Based Advantage
+
+Given a prompt $x$, sample $K$ completions:
+
+
+$$
+\{y^{(1)}, \dots, y^{(K)}\} \sim \pi_\theta(\cdot \mid x).
+$$
+The reward model assigns scores:
+
+
+$$
+R^{(k)} = r_\phi(x, y^{(k)}), \quad k=1,\dots,K.
+$$
+Define the group mean reward:
+
+
+$$
+\bar{R} = \frac{1}{K} \sum_{k=1}^K R^{(k)}.
+$$
+::: definition
+**Definition 19** (GRPO Advantage). *The group-relative advantage is
+
+$$
+\hat{A}^{(k)} = R^{(k)} - \bar{R}.
+$$
+*
+:::
+
+#### Key Property
+
+By construction:
+
+
+$$
+\mathbb{E}_{k}[\hat{A}^{(k)} \mid x] = 0,
+$$
+so the baseline is unbiased, eliminating the need for a learned critic.
+
+---
+
+## GRPO Objective
+
+Define the probability ratio:
+
+
+$$
+\rho^{(k)}(\theta) = \frac{\pi_\theta(y^{(k)} \mid x)}{\pi_{\theta_{\mathrm{old}}}(y^{(k)} \mid x)}.
+$$
+The GRPO objective mirrors PPO:
+
+
+$$
+L^{\mathrm{GRPO}}(\theta) = \mathbb{E} \Big[ \min(\rho^{(k)}(\theta) \hat{A}^{(k)}, \; \mathrm{clip}(\rho^{(k)}(\theta), 1-\epsilon, 1+\epsilon) \hat{A}^{(k)}) \Big].
+$$
+This removes the critic entirely and relies on relative group
+comparisons.
+
+---
+
+## Advantages of GRPO
+
+- No critic required → avoids value estimation bias,
+
+- Variance reduction via within-group comparison,
+
+- Objective remains unbiased: 
+$$
+\mathbb{E}[\hat{A}^{(k)}] = 0,
+$$
+- Computationally simpler than PPO with a learned critic,
+
+- Naturally aligns with human preference comparisons (relative reward).
+
+---
+
+## GRPO as PPO Without Critic
+
+Conceptually, GRPO can be seen as:
+
+::: center
+*PPO where the value function $V(s)$ is replaced by an empirical group
+mean $\bar{R}$.*
+:::
+
+This eliminates:
+
+- TD bootstrapping bias,
+
+- Critic collapse,
+
+- Instability from misestimated value functions.
+
+---
+
+## Implementation Notes
+
+- Sample multiple completions per prompt ($K \ge 4$ typically),
+
+- Compute group-relative advantages and probability ratios,
+
+- Apply PPO clipping as usual,
+
+- No backpropagation through a critic is required.
+
+---
+
+## Summary
+
+- GRPO simplifies RLHF by removing the critic,
+
+- Uses group-relative baselines to reduce variance,
+
+- Maintains unbiased policy gradient estimates,
+
+- Provides stable and computationally efficient training for large-scale
+  language models.
+
+## GRPO workflow
+![GRPO workflow](/GRPO_workflow.png)
+
+# GRPO Implementation for RLHF
+
+The following pseudocode outlines the implementation of Group Relative
+Policy Optimization (GRPO) applied in the context of Reinforcement
+Learning from Human Feedback (RLHF). We assume access to a pretrained
+language model (e.g., GPT), a reward model trained on human preferences,
+and tokenized input/output sequences.
+
+## Setup
+
+- **Actor (Policy) Model:** Pretrained transformer language model
+  $\pi_\theta$ producing token probabilities.
+
+- **Reward Model:** Pretrained or fine-tuned reward model $r_\phi$
+  mapping sequences to scalar scores.
+
+- **Data:** Prompts $x$ and model-generated completions $y$ (candidate
+  responses).
+
+- **Groups:** Partition of samples into groups $G_1, G_2, \dots$ for
+  group-relative advantage computation.
+
+
+## Pytorch Pseudocode
+```python
+# Pseudo-code: GRPO for RLHF
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+
+# ------------------------------------------------------------
+# 1. Assumptions / Pretrained Components
+# ------------------------------------------------------------
+
+# We have a pretrained GPT model as the policy backbone.
+# It outputs a distribution over the vocabulary at each token position.
+# We'll denote it as `policy_model`.
+
+class PolicyModel(nn.Module):
+    def __init__(self, pretrained_gpt):
+        super().__init__()
+        self.transformer = pretrained_gpt  # pretrained GPT
+        # optionally add small policy head if needed
+    def forward(self, input_ids, attention_mask=None):
+        # returns logits over vocabulary
+        return self.transformer(input_ids, attention_mask=attention_mask).logits
+
+# Reward model: predicts scalar reward for a sequence (or token-wise).
+# Usually a transformer head over hidden states, MLP pooling, then scalar output
+class RewardModel(nn.Module):
+    def __init__(self, hidden_dim, vocab_size):
+        super().__init__()
+        self.transformer = pretrained_gpt  # can share weights or separate
+        self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.Tanh(),
+            nn.Linear(hidden_dim, 1)
+        )
+    def forward(self, input_ids, attention_mask=None):
+        hidden_states = self.transformer(input_ids, attention_mask=attention_mask).last_hidden_state
+        # mean pooling
+        pooled = hidden_states.mean(dim=1)
+        reward = self.value_head(pooled).squeeze(-1)  # scalar reward per sequence
+        return reward
+
+# ------------------------------------------------------------
+# 2. Data
+# ------------------------------------------------------------
+
+# Data comes from prompts and multiple responses from the policy:
+# For GRPO, we group responses from several models or model samples to compute relative rewards
+# We assume: batch of prompts `prompts`, each prompt has N sampled responses `responses`
+# responses.shape = (batch_size, N, sequence_length)
+# Each response is tokenized to `input_ids` for the policy and reward models
+
+# Example:
+# prompts = ["Write a polite email", "Summarize the article", ...]
+# responses = model.sample_responses(prompts, num_samples=N)
+# responses_tensor = tokenize(responses)  # shape [B, N, L]
+
+# ------------------------------------------------------------
+# 3. GRPO Algorithm
+# ------------------------------------------------------------
+
+# Key idea of GRPO:
+# - Instead of using a critic (value function), we compute relative advantages
+#   within a group of responses for the same prompt.
+# - This removes the need for a separate value function.
+# - Update policy using policy gradient weighted by these relative advantages.
+
+# Hyperparameters
+epsilon = 0.1  # PPO-like clipping
+lr = 1e-5
+num_epochs = 3
+gamma = 0.99  # discount factor for sequence rewards if needed
+
+# Instantiate models
+policy_model = PolicyModel(pretrained_gpt)
+reward_model = RewardModel(hidden_dim=768, vocab_size=50257)  # example for GPT-2
+
+# Optimizer for policy
+policy_optimizer = optim.Adam(policy_model.parameters(), lr=lr)
+
+# ------------------------------------------------------------
+# 4. Helper Functions
+# ------------------------------------------------------------
+
+def compute_group_advantages(rewards):
+    """
+    rewards: Tensor of shape (batch_size, N)
+    Compute relative advantages by subtracting the mean reward in the group
+    """
+    group_mean = rewards.mean(dim=1, keepdim=True)
+    advantages = rewards - group_mean  # shape (B, N)
+    return advantages
+
+def get_log_probs(policy_model, input_ids):
+    """
+    Compute log-probabilities of token sequences under current policy
+    input_ids: shape (B, L)
+    Returns: log_probs per sequence, shape (B,)
+    """
+    logits = policy_model(input_ids)  # [B, L, vocab_size]
+    log_probs = torch.log_softmax(logits, dim=-1)
+    # gather log probs for each token
+    token_log_probs = log_probs.gather(-1, input_ids.unsqueeze(-1)).squeeze(-1)  # [B, L]
+    return token_log_probs.sum(dim=1)  # sum over sequence -> [B]
+
+# ------------------------------------------------------------
+# 5. Training Loop
+# ------------------------------------------------------------
+
+for epoch in range(num_epochs):
+    for batch_prompts, batch_responses in data_loader:  # batch_responses: (B, N, L)
+        
+        B, N, L = batch_responses.shape
+        
+        # Flatten batch for policy evaluation
+        input_ids_flat = batch_responses.view(B*N, L)
+        
+        # Compute rewards for each response
+        with torch.no_grad():
+            rewards_flat = reward_model(input_ids_flat)  # [B*N]
+        rewards = rewards_flat.view(B, N)  # reshape [B, N]
+        
+        # Compute group-relative advantages
+        advantages = compute_group_advantages(rewards)  # [B, N]
+        advantages_flat = advantages.view(B*N)
+        
+        # Compute log probabilities under current policy
+        log_probs_flat = get_log_probs(policy_model, input_ids_flat)  # [B*N]
+        
+        # GRPO: policy gradient weighted by relative advantage
+        # We can optionally clip ratio as in PPO
+        with torch.no_grad():
+            old_log_probs_flat = log_probs_flat.clone()  # for ratio
+        
+        # Probability ratio for PPO-style clipping
+        ratio = torch.exp(log_probs_flat - old_log_probs_flat)
+        clipped_ratio = torch.clamp(ratio, 1-epsilon, 1+epsilon)
+        # surrogate objective
+        surrogate = torch.min(ratio * advantages_flat, clipped_ratio * advantages_flat)
+        loss = -surrogate.mean()  # gradient ascent -> minimize negative
+        
+        # Backprop and update policy
+        policy_optimizer.zero_grad()
+        loss.backward()
+        policy_optimizer.step()
+```
+
+## Notes on Implementation
+
+- The **policy model** is typically a transformer (e.g., GPT) that
+  outputs a probability distribution over the next token.
+
+- The **reward model** can be an MLP or transformer that outputs a
+  scalar for a full sequence.
+
+- The **group-relative baseline** stabilizes training by centering
+  rewards within each group, reducing variance without requiring a
+  critic.
+
+- The **clip** operation enforces a soft trust region similar to PPO.
+
+- Sequences can be truncated or padded for efficient batching.
+
+# Conclusion
+
+In this document, we have presented a rigorous and detailed derivation
+of policy gradient and actor--critic methods, highlighting the
+theoretical foundations and practical considerations for their
+implementation. Key contributions include:
+
+- The policy gradient theorem, including baseline and advantage function
+  formulations,
+
+- Actor--critic methods and temporal-difference learning for variance
+  reduction,
+
+- The performance difference lemma and its implications for trust-region
+  optimization,
+
+- TRPO and PPO as methods for stable policy improvement in
+  high-dimensional, parameterized policy spaces,
+
+- Generalized Advantage Estimation (GAE) for bias--variance control in
+  advantage estimation,
+
+- Reinforcement Learning from Human Feedback (RLHF), including reward
+  model training, KL regularization, and policy optimization,
+
+- Group Relative Policy Optimization (GRPO) as a critic-free variant of
+  PPO tailored to preference-based reward settings.
+
+Through these derivations, we have connected formal theory with
+practical algorithm design, providing a pathway from foundational MDP
+concepts to modern reinforcement learning algorithms for large-scale
+language model alignment. The document is structured to enable both
+understanding and implementation, highlighting the interplay between
+mathematical rigor, variance reduction techniques, and algorithmic
+stability.
+
+Future extensions of this framework could explore:
+
+- Alternative reward modeling strategies, such as uncertainty-aware or
+  ensemble-based rewards,
+
+- Multi-agent or hierarchical extensions of GRPO for structured
+  preference optimization,
+
+- Hybrid approaches combining direct preference optimization (DPO) with
+  RLHF or GRPO.
+
+Overall, this work situates modern policy optimization methods within a
+unified theoretical and practical framework, providing a foundation for
+both research and application in reinforcement learning and
+human-aligned AI.
