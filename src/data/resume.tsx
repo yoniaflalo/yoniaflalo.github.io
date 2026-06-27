@@ -42,7 +42,7 @@ Outside of research, I enjoy music (drummer and composer), rowing, powerlifting,
       order: 8, enabled: true,
       label: "Contact",
       heading: "Get in Touch",
-      text: "Want to chat? Just shoot me a dm with a direct question on twitter and I'll respond whenever I can. I will ignore all soliciting.",
+      text: "Want to chat? Just shoot me a dm with a direct question on LinkedIn and I'll respond whenever I can. I will ignore all soliciting.",
     },
   },
   skills: [
