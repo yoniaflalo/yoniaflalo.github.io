@@ -1,0 +1,1453 @@
+---
+title: "The Missing Foundations of LLM Pretraining"
+author: Yonathan Aflalo
+publishedAt: "2026-06-26"
+summary: "The Missing Foundations of LLM Pretraining"
+math: true
+---
+
+# Introduction
+
+Large language models are often presented as a sequence of architectural innovations: Transformers, attention mechanisms, scaling laws, and post-training techniques. While this perspective is useful descriptively, it hides a more fundamental structure that explains why these systems work, how they scale, and—most importantly—why they fail.
+
+This document is an attempt to reconstruct that structure from first principles.
+
+Rather than treating pretraining as a collection of disconnected techniques, we view it as a single coupled system governed by a small number of constraints:
+
+- **Compute**, which limits how much learning can occur
+- **Data**, which defines what is learned
+- **Optimization dynamics**, which determine how learning unfolds
+- **Memory and state**, which constrain what can be stored and reused
+- **System design**, which determines what is computationally feasible
+
+From this perspective, many well-known ideas in modern machine learning become different expressions of the same underlying tradeoffs. Scaling laws describe compute allocation. Data curation defines the training distribution. Attention is a memory system under bandwidth constraints. FlashAttention, checkpointing, KV caching, and distributed training are all different ways of managing state under hardware limits.
+
+The goal of this document is not to provide a catalog of techniques, but to develop a unified mental model that allows one to reason about modern LLM training and inference systems in a principled way. In particular, it focuses on answering a question that frequently appears in frontier lab interviews:
+
+> When a large language model system fails or scales poorly, what is the underlying constraint that was violated?
+
+By the end, most pretraining and inference behaviors can be interpreted as consequences of a small set of interacting design principles rather than as isolated engineering tricks.
+
+# Scaling Laws: Compute Allocation, Not Just Bigger Models
+
+A common simplification when discussing large language models is:
+
+> Bigger models are better.
+
+This statement is partially true, but it misses the most important idea behind modern LLM scaling.
+
+The real question is not:
+
+> How large should the model be?
+
+The real question is:
+
+> Given a fixed amount of compute, how should we allocate resources between model capacity and training experience?
+
+This shift in perspective is the foundation of modern scaling laws.
+
+---
+
+## The two fundamental resources of pretraining
+
+A language model is primarily controlled by two quantities:
+
+- the number of parameters
+- the amount of training data
+
+These two resources compete for the same computational budget.
+
+---
+
+## Model parameters: increasing model capacity
+
+Let:
+
+$$
+N = \text{number of parameters}
+$$
+
+Increasing $N$ gives the model more capacity:
+
+- more representational power
+- more ability to store patterns
+- ability to learn more complex functions
+
+A larger model can represent a richer set of solutions.
+
+However, capacity alone is not sufficient.
+
+A model with billions of parameters that does not receive enough training examples is under-utilized.
+
+---
+
+## Training tokens: increasing model experience
+
+Let:
+
+$$
+D = \text{number of training tokens}
+$$
+
+Increasing $D$ gives the model more experience:
+
+- more examples of language
+- better estimation of the data distribution
+- improved generalization
+
+The model does not learn from parameters alone.
+
+It learns from the interaction between parameters and data.
+
+---
+
+## Compute is the constraint
+
+Training compute is approximately:
+
+$$
+C \approx N \times D
+$$
+
+where:
+
+- $N$ is the number of parameters
+- $D$ is the number of training tokens
+
+This means increasing model size reduces the amount of data that can be processed under a fixed compute budget.
+
+The question becomes:
+
+> Should additional compute buy a larger model or more training tokens?
+
+---
+
+## The early intuition: bigger is always better
+
+Early scaling experiments showed a clear relationship:
+
+- larger models performed better
+- more parameters improved benchmark results
+
+This created a simple intuition:
+
+$$
+\text{more parameters}
+\rightarrow
+\text{better model}
+$$
+
+Therefore, when additional compute became available, the dominant strategy was:
+
+> Build a larger model.
+
+However, this ignored whether the model was trained enough.
+
+---
+
+## Kaplan scaling laws: predictable improvement with scale
+
+The scaling law work showed that language model loss follows predictable power-law behavior.
+
+A simplified relationship is:
+
+$$
+L(N)=L_\infty+aN^{-\alpha}
+$$
+
+where:
+
+- $L$ is the loss
+- $N$ is the number of parameters
+- $L_\infty$ is the irreducible loss
+
+The important observation:
+
+Increasing model size improves performance in a predictable way.
+
+However, the same phenomenon exists for data:
+
+$$
+L(D)
+$$
+
+More tokens also improve performance.
+
+Therefore the real optimization problem is:
+
+$$
+\min L(N,D)
+$$
+
+under the compute constraint:
+
+$$
+C=N\times D
+$$
+
+---
+
+## The hidden problem: under-trained models
+
+A very large model can fail to reach its potential if it does not see enough data.
+
+A model has two sources of error:
+
+$$
+L =
+L_{\text{capacity}}
++
+L_{\text{data}}
+$$
+
+A small model suffers from limited capacity:
+
+$$
+L_{\text{capacity}} \uparrow
+$$
+
+A huge but under-trained model has enough capacity, but insufficient experience:
+
+$$
+L_{\text{data}} \uparrow
+$$
+
+The second case explains why a smaller model trained longer can outperform a larger model.
+
+---
+
+## Chinchilla: compute-optimal training
+
+The Chinchilla scaling laws revisited the question:
+
+> Given a fixed compute budget, what is the optimal allocation between parameters and data?
+
+The key conclusion:
+
+Many large language models were under-trained.
+
+They had:
+
+- too many parameters
+- too few training tokens
+
+A simplified compute-optimal rule is:
+
+$$
+D \approx 20N
+$$
+
+meaning:
+
+For each parameter, the model should see roughly twenty training tokens.
+
+For example:
+
+A 70B parameter model would ideally require approximately:
+
+$$
+70B \times 20 = 1.4T
+$$
+
+tokens.
+
+---
+
+## Why smaller models can outperform larger models
+
+A larger model is not automatically better.
+
+A model with more parameters but insufficient training data wastes capacity.
+
+A smaller model trained with enough tokens can learn a better approximation of the data distribution.
+
+The important quantity is not:
+
+$$
+\text{number of parameters}
+$$
+
+but:
+
+$$
+\text{capacity} \times \text{experience}
+$$
+
+---
+
+## The deeper insight
+
+Scaling laws changed the philosophy of LLM training.
+
+The old mindset:
+
+> Build the biggest neural network possible.
+
+The modern mindset:
+
+> Allocate finite compute between model capacity and training experience.
+
+A frontier model is not defined only by its size.
+
+It is defined by how efficiently compute is converted into useful learning.
+
+# Data Is the Hidden Model: The Training Distribution Defines Capabilities
+
+A model does not learn from "the internet".
+
+It learns from the specific distribution of tokens selected during training.
+
+The data pipeline is therefore not just preprocessing.
+
+It is part of the model design.
+
+---
+
+## The training objective defines what the model learns
+
+A language model is trained with next-token prediction:
+
+$$
+\max_\theta
+\sum_t
+\log p_\theta(x_t|x_{<t})
+$$
+
+Equivalently, it minimizes:
+
+$$
+L(\theta)
+=
+\mathbb{E}_{x\sim p_{\text{train}}}
+[-\log p_\theta(x)]
+$$
+
+The crucial quantity is:
+
+$$
+p_{\text{train}}(x)
+$$
+
+the training distribution.
+
+The model learns the distribution it sees.
+
+Changing the dataset changes the model.
+
+---
+
+## More tokens are not always better
+
+A naive interpretation of scaling laws is:
+
+> More tokens always improve the model.
+
+This assumes the tokens provide useful learning signal.
+
+A dataset can contain:
+
+- high quality books
+- scientific papers
+- code
+- duplicated pages
+- noisy text
+
+Every token contributes gradients:
+
+$$
+\nabla_\theta L(x)
+$$
+
+Poor quality data creates poor optimization signals.
+
+The relevant quantity is not:
+
+$$
+\text{number of tokens}
+$$
+
+but:
+
+$$
+\text{useful information per token}
+$$
+
+---
+
+## Data mixture is a model design decision
+
+Modern LLM datasets are mixtures:
+
+$$
+p(x)=\sum_i \alpha_i p_i(x)
+$$
+
+where:
+
+- $p_i$ represents a data source
+- $\alpha_i$ represents its weight
+
+Examples:
+
+- code
+- books
+- web pages
+- scientific text
+
+Changing these weights changes the model.
+
+Increasing code data improves programming ability.
+
+Increasing conversational data changes interaction style.
+
+The dataset defines the model's prior.
+
+---
+
+## Data weighting changes the optimization objective
+
+If examples are weighted:
+
+$$
+L=\sum_i w_i L_i
+$$
+
+then the gradient becomes:
+
+$$
+\nabla_\theta L
+=
+\sum_i w_i\nabla_\theta L_i
+$$
+
+Increasing a weight means the optimizer moves more strongly toward that data distribution.
+
+Data mixture tuning is therefore a form of objective engineering.
+
+---
+
+## Deduplication: why repeated data matters
+
+Web-scale datasets contain duplicates.
+
+If the same information appears many times, the optimizer receives repeated gradients:
+
+$$
+\nabla_\theta L
+$$
+
+for the same pattern.
+
+The model interprets this as:
+
+> This pattern is extremely important.
+
+Consequences:
+
+- memorization
+- reduced diversity
+- worse generalization
+
+---
+
+## Data contamination and evaluation leakage
+
+If evaluation examples appear in training data:
+
+$$
+p_{\text{train}}(x)
+\supset
+p_{\text{test}}(x)
+$$
+
+then evaluation no longer measures generalization.
+
+The model may simply memorize.
+
+This is why frontier labs invest heavily in:
+
+- contamination detection
+- clean evaluation sets
+- private benchmarks
+
+---
+
+## Synthetic data and feedback loops
+
+Synthetic data can increase scale and quality.
+
+However, it introduces a risk.
+
+If generated data becomes too similar to the model distribution:
+
+$$
+p_{\text{synthetic}}
+\approx
+p_{\text{model}}
+$$
+
+the model begins learning from its own outputs.
+
+This can amplify mistakes and reduce diversity.
+
+---
+
+## The deeper insight
+
+Scaling laws tell us:
+
+> More compute produces predictable improvements.
+
+Data determines:
+
+> What those improvements are spent learning.
+
+A model is not only:
+
+$$
+f(\text{architecture},\text{compute})
+$$
+
+It is:
+
+$$
+\boxed{
+f(\text{architecture},\text{compute},\text{data distribution})
+}
+$$
+
+The dataset is not an input to the model.
+
+The dataset is part of the model.
+
+# Optimization Is a Stochastic Dynamical System
+
+Training a neural network is often described as “minimizing a loss function”.
+
+This description is correct, but incomplete.
+
+In practice, training is not deterministic optimization. It is a noisy, discrete-time dynamical system driven by stochastic gradients, numerical stability constraints, and hardware-induced approximations.
+
+Understanding this viewpoint is essential for reasoning about:
+
+- why training is unstable at scale
+- why learning rate schedules matter
+- why batch size changes generalization
+- why large models sometimes diverge unexpectedly
+
+---
+
+## Training as gradient flow with noise
+
+At a high level, gradient descent updates parameters as:
+
+$$
+\theta_{t+1} = \theta_t - \eta \nabla_\theta L(\theta_t)
+$$
+
+In deep learning, we never compute the full gradient over the dataset.
+
+Instead, we use stochastic estimates:
+
+$$
+g_t \approx \nabla_\theta L(\theta_t)
+$$
+
+so the update becomes:
+
+$$
+\theta_{t+1} = \theta_t - \eta g_t
+$$
+
+This introduces noise:
+
+$$
+g_t = \nabla L(\theta_t) + \epsilon_t
+$$
+
+where $\epsilon_t$ depends on batch sampling.
+
+Thus training is not deterministic descent, but:
+
+> a stochastic process over a high-dimensional parameter space.
+
+---
+
+## SGD as a discretized stochastic differential equation
+
+In the continuous limit, SGD behaves like a stochastic differential equation:
+
+$$
+d\theta = -\nabla L(\theta)\,dt + \Sigma(\theta)\,dW_t
+$$
+
+where:
+
+- $-\nabla L(\theta)$ is the drift term (optimization signal)
+- $\Sigma(\theta)$ is the noise covariance
+- $dW_t$ is Brownian motion
+
+This framing is important because it explains:
+
+- why smaller batch sizes introduce regularization
+- why large batch training can generalize worse
+- why optimization is not purely about reaching minima
+
+We are not converging to a point—we are sampling a trajectory.
+
+---
+
+## The role of learning rate as system dynamics control
+
+The learning rate $\eta$ controls the stability of the system.
+
+- too small → slow convergence, trapped dynamics
+- too large → divergence or chaotic oscillations
+
+At scale, learning rate becomes a *stability parameter*, not just a speed parameter.
+
+Warmup schedules exist because early training is particularly sensitive:
+
+- weights are uncalibrated
+- activations have high variance
+- gradients are unstable
+
+Warmup gradually transitions the system into a stable regime.
+
+---
+
+## Batch size and gradient noise scale
+
+The batch size controls the variance of gradient estimates:
+
+- small batch → high noise
+- large batch → low noise
+
+This affects the implicit bias of optimization:
+
+- high noise → flatter minima, better generalization (often)
+- low noise → sharper minima, faster convergence but potentially worse generalization
+
+There is a fundamental tradeoff between:
+
+$$
+\text{optimization efficiency} \quad \text{vs} \quad \text{statistical regularization}
+$$
+
+---
+
+## Adam, momentum, and adaptive dynamics
+
+Modern optimizers modify the raw gradient dynamics.
+
+Adam introduces exponential moving averages:
+
+$$
+m_t = \beta_1 m_{t-1} + (1-\beta_1) g_t
+$$
+
+$$
+v_t = \beta_2 v_{t-1} + (1-\beta_2) g_t^2
+$$
+
+Update rule:
+
+$$
+\theta_{t+1} = \theta_t - \eta \frac{m_t}{\sqrt{v_t} + \epsilon}
+$$
+
+This introduces:
+
+- adaptive step sizes per parameter
+- smoothing of stochastic noise
+- implicit conditioning of the loss landscape
+
+Adam can be interpreted as:
+
+> a preconditioned stochastic dynamical system.
+
+---
+
+## Weight decay and effective regularization
+
+With AdamW-style weight decay:
+
+$$
+\theta \leftarrow \theta - \eta (\nabla L(\theta) + \lambda \theta)
+$$
+
+This adds a contraction force toward zero, preventing parameter explosion.
+
+In large models, weight decay is not optional—it stabilizes the dynamics.
+
+---
+
+## Why training instability emerges at scale
+
+As models grow, several factors interact:
+
+- larger gradients in early layers
+- mixed precision numerical errors
+- attention softmax saturation
+- residual stream amplification
+
+These effects accumulate, producing:
+
+- loss spikes
+- divergence events
+- NaNs in activations
+
+Instability is not a bug. It is a property of scaling nonlinear dynamical systems.
+
+---
+
+## The key mental model
+
+Training is not:
+
+> minimizing a function
+
+but rather:
+
+> evolving a high-dimensional stochastic system under constraints of noise, curvature, and numerical precision.
+
+The goal is not to “reach the minimum”.
+
+The goal is to:
+
+> keep the system in a stable, information-rich regime for long enough to extract structure from data.
+
+---
+
+## Transition to next idea
+
+Once training is understood as a dynamical system, the next question becomes:
+
+> What exactly is being evolved?
+
+This leads directly to attention:
+
+- not as a layer
+- but as a **state access mechanism over memory**
+
+---
+
+# Attention Is a Memory Mechanism, Not a Layer
+
+Attention is usually introduced as a neural network “layer” operating on sequences.
+
+This is misleading.
+
+A more accurate interpretation is:
+
+> Attention is a differentiable memory retrieval system operating over a set of key-value pairs.
+
+Once this is understood, many engineering and scaling phenomena become natural consequences rather than separate tricks.
+
+---
+
+## 1. From sequence processing to memory access
+
+Given an input sequence of hidden states:
+
+$$
+x_1, x_2, \dots, x_T
+$$
+
+we compute:
+
+- queries $Q$
+- keys $K$
+- values $V$
+
+$$
+Q = XW_Q, \quad K = XW_K, \quad V = XW_V
+$$
+
+Attention is defined as:
+
+$$
+\text{Attn}(Q,K,V)
+=
+\text{softmax}\left(\frac{QK^T}{\sqrt{d}}\right)V
+$$
+
+But this formulation hides the key idea:
+
+> Each token is querying a memory bank of past representations.
+
+---
+
+## 2. Keys and values define a memory
+
+We can reinterpret the computation as:
+
+- **Keys** = addressing mechanism
+- **Values** = stored content
+
+Each token writes:
+
+$$
+(k_t, v_t)
+$$
+
+and future tokens read from this store using similarity between queries and keys.
+
+This makes attention equivalent to:
+
+> content-addressable memory.
+
+---
+
+## 3. Why attention is not “just a layer”
+
+Unlike standard MLP layers:
+
+- attention has access to all previous tokens
+- computation depends on pairwise interactions
+- state grows with sequence length
+
+Thus attention is fundamentally different:
+
+- MLP: local transformation
+- attention: global memory lookup
+
+This difference is structural, not cosmetic.
+
+---
+
+## 4. The quadratic cost comes from memory access patterns
+
+The core computation:
+
+$$
+QK^T
+$$
+
+computes all pairwise similarities:
+
+- every query compares to every key
+- resulting in $T^2$ interactions
+
+This is not an implementation detail.
+
+It is the direct consequence of:
+
+> full retrieval over an uncompressed memory.
+
+---
+
+## 5. Causal attention as online memory construction
+
+In autoregressive models, we enforce:
+
+$$
+\text{token } t \text{ can only attend to } \leq t
+$$
+
+This transforms attention into an online system:
+
+- at step $t$, memory contains $t$ entries
+- new tokens extend memory
+- past computations remain valid
+
+This is what enables KV caching during inference.
+
+---
+
+## 6. KV cache as persistent external memory
+
+During inference, recomputing $K,V$ is redundant.
+
+We store:
+
+$$
+K_{1:t}, \quad V_{1:t}
+$$
+
+This turns attention into:
+
+> a read-only memory system with append-only writes.
+
+The cost shifts from recomputation to storage bandwidth.
+
+This is why inference becomes memory-bound rather than compute-bound.
+
+---
+
+## 7. Attention as retrieval, not transformation
+
+It is useful to separate two roles:
+
+- **MLP layers**: transform representations
+- **attention layers**: retrieve relevant past information
+
+Thus a transformer block is:
+
+> computation + memory access
+
+not simply a sequence of layers.
+
+---
+
+## 8. Why scaling attention increases capability
+
+Increasing model depth or width improves:
+
+- representation of queries (better retrieval)
+- representation of keys (better indexing)
+- representation of values (richer stored content)
+
+Thus scaling does not just increase “capacity”.
+
+It improves:
+
+> the quality of memory addressing.
+
+---
+
+## 9. The fundamental bottleneck
+
+Attention is limited by:
+
+- memory size (KV cache growth)
+- quadratic retrieval cost
+- bandwidth constraints during inference
+
+This is why many modern systems optimizations exist:
+
+- FlashAttention → reduce memory traffic
+- KV caching → avoid recomputation
+- sparse attention → reduce retrieval scope
+
+All of these are modifications of the same system:
+
+> structured memory access under hardware constraints.
+
+---
+
+## 10. Key mental model
+
+A transformer is not a stack of layers.
+
+It is:
+
+> a system that writes to memory (K,V) and repeatedly queries it (QKᵀ) under compute and bandwidth constraints.
+
+From this perspective:
+
+- attention = memory retrieval
+- KV cache = persistent state
+- FlashAttention = optimized memory traversal
+- long-context modeling = memory scaling problem
+
+---
+
+## Transition to next idea
+
+Once attention is understood as a memory system, the next natural question is:
+
+> How do we implement this efficiently under real hardware constraints?
+
+# All Systems Tricks Reduce to State Management
+
+Modern large language model systems are often described through a collection of seemingly unrelated techniques:
+
+- activation checkpointing
+- FlashAttention
+- KV caching
+- distributed training (FSDP / tensor parallelism)
+- MoE routing
+- gradient checkpointing
+- recomputation strategies
+
+At first glance, these appear to be independent engineering optimizations.
+
+However, they all optimize the same underlying constraint:
+
+> how to manage *state* under limited memory, compute, and communication bandwidth.
+
+Once this is understood, most systems design questions reduce to a single unifying principle.
+
+---
+
+## 1. The fundamental constraint: state cannot all be resident
+
+A transformer training step involves multiple forms of state:
+
+- **activations** (intermediate forward pass tensors)
+- **parameters** (model weights)
+- **gradients** (backward pass signals)
+- **optimizer state** (Adam moments, etc.)
+- **attention memory** (keys and values)
+
+The key issue:
+
+> not all of this state can be stored at full precision and full granularity on a single device.
+
+Therefore, every system design choice is a tradeoff between:
+
+- recomputation
+- storage
+- communication
+
+---
+
+## 2. Activation checkpointing = recomputation over storage
+
+During backpropagation, intermediate activations are required to compute gradients:
+
+$$
+\frac{\partial L}{\partial W_i}
+$$
+
+Naively, all intermediate states are stored.
+
+Checkpointing instead stores only selected intermediate states and recomputes the rest during backward pass.
+
+This trades:
+
+- memory usage ↓
+- compute usage ↑
+
+Formally:
+
+> checkpointing replaces storage complexity with recomputation complexity.
+
+---
+
+## 3. KV cache = temporal state persistence
+
+During inference, attention requires past keys and values:
+
+$$
+K_{1:t}, \quad V_{1:t}
+$$
+
+Recomputing them at every step would be redundant.
+
+Instead, we persist them across time.
+
+This introduces a different tradeoff:
+
+- memory usage ↑ (grows with sequence length)
+- compute usage ↓ (no recomputation)
+
+KV cache is therefore:
+
+> a temporal memory optimization for autoregressive state reuse.
+
+---
+
+## 4. FlashAttention = structured elimination of materialized state
+
+Standard attention explicitly constructs:
+
+$$
+QK^T
+$$
+
+which is a full $T \times T$ matrix.
+
+FlashAttention avoids materializing this matrix by computing attention in blocks:
+
+- streaming over $K$ and $V$
+- computing softmax incrementally
+- never storing full attention scores
+
+This changes the bottleneck:
+
+- memory bandwidth ↓ dramatically
+- compute roughly unchanged
+- numerical stability improved
+
+Thus FlashAttention is:
+
+> checkpointing applied inside the attention computation graph.
+
+---
+
+## 5. FSDP = distributed state sharding
+
+Fully Sharded Data Parallel (FSDP) distributes model parameters across devices.
+
+Instead of storing full parameters on each GPU:
+
+- parameters are partitioned (sharded)
+- gathered only when needed
+- gradients are reduced and redistributed
+
+This introduces a spatial state tradeoff:
+
+- memory per device ↓
+- communication cost ↑
+
+FSDP is:
+
+> checkpointing of parameters across devices.
+
+---
+
+## 6. MoE = conditional state activation
+
+Mixture-of-Experts models store multiple parameter sets:
+
+- only a subset is activated per token
+- routing selects active experts
+
+This changes computation pattern:
+
+- total parameter count ↑
+- active computation per token ≈ constant
+
+MoE is therefore:
+
+> sparse activation of a large distributed state space.
+
+---
+
+## 7. The unifying principle
+
+All these methods manipulate the same abstraction:
+
+### State = anything required to compute forward/backward passes
+
+We can classify optimizations along three axes:
+
+| Strategy | What is reduced |
+|----------|----------------|
+| Checkpointing | stored activations |
+| KV cache | recomputation over time |
+| FlashAttention | memory materialization |
+| FSDP | parameter residency |
+| MoE | active parameter subset |
+
+Despite different implementations, all techniques trade:
+
+$$
+\text{compute} \leftrightarrow \text{memory} \leftrightarrow \text{communication}
+$$
+
+---
+
+## 8. The deeper insight
+
+The key realization is:
+
+> A large language model is not just a function. It is a distributed state machine.
+
+Training and inference are both:
+
+- state creation
+- state transformation
+- state movement across hardware boundaries
+
+All engineering decisions reduce to:
+
+> where does the state live, and when do we pay the cost to access it?
+
+---
+
+## 9. Why this perspective matters in interviews
+
+This unifying view is what interviewers are often probing indirectly when they ask:
+
+- “Why does checkpointing work?”
+- “What is KV cache really doing?”
+- “Why does FlashAttention reduce memory usage?”
+- “What breaks when you scale sequence length?”
+
+They are not testing isolated knowledge.
+
+They are testing whether you understand:
+
+> state, and how it moves through a system.
+
+---
+
+## 10. Key mental model
+
+A transformer system is:
+
+> a distributed state management engine operating under strict memory, compute, and bandwidth constraints.
+
+Every optimization is simply a different way of moving or avoiding state.
+
+# Pretraining Failure Modes Are Predictable
+
+One of the most important shifts in thinking about large language model training is the realization that:
+
+> failures at scale are not random—they are structured consequences of compute, data, and optimization constraints.
+
+Once scaling laws, data distribution, optimization dynamics, and system constraints are understood, many training failures can be anticipated rather than discovered empirically.
+
+---
+
+## 1. The three fundamental sources of failure
+
+Almost all pretraining issues originate from one of three domains:
+
+- **Compute allocation failure** (scaling mismatch)
+- **Data distribution failure** (bad or misaligned signal)
+- **Optimization failure** (unstable dynamics)
+
+These interact, but are conceptually separable.
+
+---
+
+## 2. Compute allocation failure (under/over-scaling)
+
+From scaling laws, performance depends on both model size and training tokens:
+
+$$
+L = f(N, D)
+$$
+
+subject to:
+
+$$
+C = N \times D
+$$
+
+### Under-trained models
+
+If $N$ is too large relative to $D$:
+
+- the model has capacity it cannot use
+- representations remain poorly fitted
+- validation loss plateaus early
+
+This is the **Chinchilla regime violation**.
+
+---
+
+### Over-constrained models
+
+If $N$ is too small:
+
+- capacity saturates early
+- additional data yields diminishing returns
+- model cannot represent long-tail structure
+
+---
+
+### Key insight
+
+> Many “training failures” are actually incorrect compute allocation choices.
+
+---
+
+## 3. Data distribution failure
+
+The model is trained on:
+
+$$
+\mathbb{E}_{x \sim p_{\text{train}}}
+$$
+
+If $p_{\text{train}}$ is misaligned, the model learns the wrong inductive biases.
+
+---
+
+### (a) Low-quality data contamination
+
+If noisy or low-information tokens dominate:
+
+- gradients become high variance
+- optimization signal weakens
+- model learns spurious correlations
+
+This often manifests as:
+
+> “model feels dumb despite scaling”
+
+---
+
+### (b) Distribution shift
+
+If training data differs from target use cases:
+
+- benchmark performance does not reflect real performance
+- reasoning ability may not transfer
+
+---
+
+### (c) Duplication amplification
+
+Repeated samples distort effective distribution:
+
+$$
+p(x) \rightarrow p(x) + \delta \cdot \text{duplicates}
+$$
+
+The optimizer interprets frequency as importance.
+
+---
+
+## 4. Optimization failure modes (dynamics instability)
+
+Training is a stochastic dynamical system:
+
+$$
+d\theta = -\nabla L(\theta)\,dt + \Sigma(\theta)\,dW_t
+$$
+
+This system can become unstable.
+
+---
+
+### (a) Loss spikes and divergence
+
+Causes include:
+
+- learning rate too high
+- poor warmup schedule
+- mixed precision overflow
+- unstable attention logits
+
+At scale, small numerical instabilities amplify across layers.
+
+---
+
+### (b) Gradient explosion in deep networks
+
+Residual streams accumulate signal:
+
+$$
+x_{l+1} = x_l + f(x_l)
+$$
+
+Without proper normalization, signal magnitude grows with depth.
+
+This leads to:
+
+- NaNs
+- irrecoverable divergence
+
+---
+
+### (c) Batch size / noise mismatch
+
+Too little noise:
+
+- sharp minima
+- poor generalization
+
+Too much noise:
+
+- slow convergence
+- unstable training dynamics
+
+---
+
+## 5. Attention-specific failure modes
+
+Attention introduces its own class of instabilities:
+
+- softmax saturation (peaky distributions)
+- attention collapse (single-token dominance)
+- KV cache drift (long-context degradation)
+
+At long sequence lengths:
+
+$$
+\frac{QK^T}{\sqrt{d}}
+$$
+
+becomes numerically sensitive.
+
+---
+
+## 6. Systems-level failure modes (state explosion)
+
+Modern training is constrained by state management:
+
+- activations
+- gradients
+- optimizer states
+- attention caches
+
+Failures occur when state becomes unmanageable:
+
+### (a) Memory exhaustion
+
+- activations exceed device capacity
+- optimizer state dominates memory footprint
+
+### (b) Communication bottlenecks
+
+- distributed training becomes bandwidth-limited
+- FSDP synchronization overhead dominates compute
+
+### (c) Recompute/communication mismatch
+
+Checkpointing improves memory usage but increases compute:
+
+$$
+\text{memory} \downarrow \quad \Rightarrow \quad \text{compute} \uparrow
+$$
+
+Incorrect tradeoffs reduce throughput instead of improving it.
+
+---
+
+## 7. Emergent failure: misalignment between training signals and evaluation
+
+Even when training is stable, failure can appear at evaluation time:
+
+- perplexity improves but reasoning does not
+- loss decreases but capabilities plateau
+- scaling produces no observable gains
+
+This usually indicates:
+
+> mismatch between training objective and desired capability
+
+not optimization failure.
+
+---
+
+## 8. The unifying view of failure
+
+All pretraining failures can be mapped to a single equation:
+
+$$
+\text{Failure} =
+f(
+\text{compute allocation},
+\text{data distribution},
+\text{optimization stability},
+\text{system constraints}
+)
+$$
+
+When something breaks, it is almost always because one of these assumptions was violated.
+
+---
+
+## 9. Key mental model
+
+Pretraining is not an exploratory process.
+
+It is a constrained dynamical system where:
+
+- compute defines the capacity budget
+- data defines the learning signal
+- optimization defines trajectory stability
+- systems define feasibility of execution
+
+Failures are therefore not surprises.
+
+They are **predictable constraint violations**.
+
+---
+
+## Final synthesis
+
+A frontier model is not just a neural network.
+
+It is:
+
+> a large-scale coupled system of optimization, statistics, and distributed computation.
+
+Understanding pretraining means understanding how that system fails under stress.
